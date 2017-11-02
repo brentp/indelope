@@ -1,0 +1,8 @@
+nimcache
+*.fq
+*.sam
+*.bam
+*.bai
+*.fastq
+assemble
+scrutinize
