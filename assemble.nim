@@ -15,6 +15,8 @@ type
     # TODO: remove this. just for debugging
     reads: seq[string]
 
+type Contigs* = seq[Contig]
+
 const complement = ['N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'T', 'N', 'G', 'N', 'N', 'N', 'C', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'A', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'T', 'N', 'G', 'N', 'N', 'N', 'C', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'A', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N']
 
 proc revcomp(c: var Contig) =
@@ -229,7 +231,6 @@ proc add*(c: Contig, dna: string, min_overlap:int=40, max_mismatch:int=3, p_over
   else:
     o = Contig(sequence: dna, base_count:bc, nreads: 1, reads: @[read])
   o.mismatch_count = new_seq[uint32](dna.len)
-  revcomp(o)
   return c.add(o, min_overlap, max_mismatch, p_overlap, reverse=false)
 
 proc combine*(contigs: var seq[Contig], p_overlap:float64=0.6, reverse:bool=false): seq[Contig] =
@@ -280,7 +281,11 @@ when isMainModule:
     assert c.add(dna_mid, p_overlap=0.6)
     assert sl == c.len(), "should not have longer "
 
-    assert c.sequence == "CGCGCGCGTAAAAACTCTAGCTATATATACTAATCTCCCTACAAATCTCCTTAATTATAACATTCACAGCCACAGAACTAATCATATTTTATATCTTCTTCGAAACCAC"
+    if c.sequence != "CGCGCGCGTAAAAACTCTAGCTATATATACTAATCTCCCTACAAATCTCCTTAATTATAACATTCACAGCCACAGAACTAATCATATTTTATATCTTCTTCGAAACCAC":
+      echo c.sequence
+      echo "CGCGCGCGTAAAAACTCTAGCTATATATACTAATCTCCCTACAAATCTCCTTAATTATAACATTCACAGCCACAGAACTAATCATATTTTATATCTTCTTCGAAACCAC"
+      quit(2)
+
     assert join(map(c.base_count, proc(x:uint32): string = $x)) == "1111111112222222222333333333333333444444444444444444444444333333333333333333333333332222222222222222221111111"
 
     c = Contig()
