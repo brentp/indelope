@@ -3,6 +3,8 @@ import sequtils
 import algorithm
 import sets
 
+const complement = ['N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'T', 'N', 'G', 'N', 'N', 'N', 'C', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'A', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'T', 'N', 'G', 'N', 'N', 'N', 'C', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'A', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N']
+
 type 
   Contig* = ref object of RootObj
     ## a contig is a collection of sequences that have been
@@ -11,22 +13,37 @@ type
     sequence*: string
     base_count*: seq[uint32]
     mismatch_count*: seq[uint32]
+    reversed: bool # flipped when revcomped
     nreads*: int
     # TODO: remove this. just for debugging
     reads: seq[string]
 
-type Contigs* = seq[Contig]
-
-const complement = ['N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'T', 'N', 'G', 'N', 'N', 'N', 'C', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'A', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'T', 'N', 'G', 'N', 'N', 'N', 'C', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'A', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N']
+  Match* = ref object of RootObj
+    matches: int
+    added: bool
+    offset: int
+    mm: int
+    sub: string
+    reversed: bool
+    contig: Contig
 
 proc revcomp(c: var Contig) =
   c.base_count.reverse
   c.sequence.reverse
   c.mismatch_count.reverse
+  c.reversed = not c.reversed
   for i, ch in c.sequence:
     c.sequence[i] = complement[ch.int]
 
 var DEBUG* = false
+
+proc match_sort(a, b: Match): int =
+  if a.matches == b.matches:
+    return b.mm - a.mm
+  return a.matches - b.matches
+
+type Contigs* = seq[Contig]
+type Matches* = seq[Match]
 
 proc len*(c:Contig): int {.inline.} =
   ## the length of the sequence of the contig
@@ -62,7 +79,8 @@ proc `$`*(c: Contig): string =
       pow += 1
     result.add("\n")
 
-proc add*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.7, reverse:bool=false): bool =
+
+proc count_matches*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.7): Match =
   ## add a dna sequence to the contig. return indicates if it was added.
   if c.sequence == nil:
     c.sequence = dna.sequence
@@ -71,7 +89,7 @@ proc add*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch:int=3, p_
     c.mismatch_count = dna.mismatch_count
     when defined(reads):
       c.reads = dna.reads
-    return true
+    return Match(matches: dna.len, added: true)
 
   var min_mm = max_mismatch + 1
   var max_ma = 0
@@ -112,18 +130,27 @@ proc add*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch:int=3, p_
       max_sub = sub
 
   if min_mm > max_mismatch or float64(max_ma) / float64(min(dna.len, c.len)) < p_overlap:
-    if reverse:
-      revcomp(dna)
-      return c.add(dna, min_overlap=min_overlap, max_mismatch=max_mismatch, p_overlap=p_overlap, reverse=false)
+    return nil
 
-    return false
+  return Match(matches: max_ma, added: false, contig: c,
+      offset: max_ma_offset, mm: min_mm, sub: max_sub, reversed: dna.reversed)
+
+proc insert*(c: Contig, dna: var Contig, match:Match=nil, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.7): bool =
+  var matches = match
+  if matches == nil:
+    matches = c.count_matches(dna, min_overlap=min_overlap, max_mismatch=max_mismatch, p_overlap=p_overlap)
+    if matches == nil: return false
+    if matches.added: return true
+
+  if matches.reversed != dna.reversed:
+    revcomp(dna)
 
   if DEBUG:
     var x = ""
-    for i in 0..<abs(max_ma_offset):
+    for i in 0..<abs(matches.offset):
       x &= " "
     echo "BEFORE"
-    if max_ma_offset < 0:
+    if matches.offset < 0:
       echo "CTG :", x & c.sequence
       echo "READ:", dna.sequence
     else:
@@ -131,12 +158,12 @@ proc add*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch:int=3, p_
       echo "READ:", x & dna.sequence
 
 
-  if max_ma_offset >= 0:
+  if matches.offset >= 0:
     # add sequence ot the right end (or middle).
     var extra = 0
-    if (max_ma_offset + dna.len) > c.sequence.len:
+    if (matches.offset + dna.len) > c.sequence.len:
       # the added sequence extends the contig 
-      extra = max_ma_offset + dna.len - c.sequence.len
+      extra = matches.offset + dna.len - c.sequence.len
       c.sequence &= dna.sequence[(dna.len - extra)..<dna.len]
     if c.sequence.len > c.base_count.len:
       # this should always be true
@@ -147,17 +174,17 @@ proc add*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch:int=3, p_
         c.base_count[i] = 1
 
     #for i in max_ma_offset..<min(c.len, dna.len - max_ma_offset):
-    for i in max_ma_offset..<min(c.len-extra, dna.len + max_ma_offset):
-      if c.sequence[i] == dna.sequence[i - max_ma_offset]:
+    for i in matches.offset..<min(c.len-extra, dna.len + matches.offset):
+      if c.sequence[i] == dna.sequence[i - matches.offset]:
         #echo i, " adding ", c.len, " ", i - max_ma_offset, " in ", dna.len
-        c.base_count[i] += dna.base_count[i - max_ma_offset]
-      elif dna.base_count[i - max_ma_offset] > c.base_count[i]:
+        c.base_count[i] += dna.base_count[i - matches.offset]
+      elif dna.base_count[i - matches.offset] > c.base_count[i]:
         # if the incoming contig has more evidence for a different base, we adopt it.
-        c.sequence[i] = dna.sequence[i - max_ma_offset]
-        c.base_count[i] = dna.base_count[i - max_ma_offset]
+        c.sequence[i] = dna.sequence[i - matches.offset]
+        c.base_count[i] = dna.base_count[i - matches.offset]
   else:
     # add new sequence to the left end
-    c.sequence = dna.sequence[0..<(-max_ma_offset)] & c.sequence
+    c.sequence = dna.sequence[0..<(-matches.offset)] & c.sequence
     # if the dna.sequence completely encompasses the contig sequence, we have to added
     # to the right end as well:
     if dna.sequence.len > c.sequence.len:
@@ -168,11 +195,11 @@ proc add*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch:int=3, p_
       c.base_count.set_len(c.sequence.len)
       c.mismatch_count.set_len(c.sequence.len)
       # move all the counts to the left
-      for i in countdown(c.len-1, -max_ma_offset):
-        c.base_count[i] = c.base_count[i + max_ma_offset]
-        c.mismatch_count[i] = c.mismatch_count[i + max_ma_offset]
+      for i in countdown(c.len-1, -matches.offset):
+        c.base_count[i] = c.base_count[i + matches.offset]
+        c.mismatch_count[i] = c.mismatch_count[i + matches.offset]
       # zero out the newest.
-      for i in countdown(-max_ma_offset-1, 0):
+      for i in countdown(-matches.offset-1, 0):
         c.base_count[i] = 0
         c.mismatch_count[i] = 0
       # increment the match.
@@ -190,14 +217,14 @@ proc add*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch:int=3, p_
   # ERROR correction
   # now track the mismatches so we can do a crude error correction by voting.
   var found = false
-  for i, s in max_sub:
-      if i + max(0, max_ma_offset) == c.sequence.len: break
-      if s != c.sequence[i + max(0, max_ma_offset)]:
-        c.mismatch_count[i + max(0, max_ma_offset)] += 1
+  for i, s in matches.sub:
+      if i + max(0, matches.offset) == c.sequence.len: break
+      if s != c.sequence[i + max(0, matches.offset)]:
+        c.mismatch_count[i + max(0, matches.offset)] += 1
         found = true
   if found:
-    for i, s in max_sub:
-      var cidx = i + max(0, max_ma_offset)
+    for i, s in matches.sub:
+      var cidx = i + max(0, matches.offset)
       if cidx == c.sequence.len: break
       if c.mismatch_count[cidx] > c.base_count[cidx]:
         # switch to more likely base
@@ -206,7 +233,6 @@ proc add*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch:int=3, p_
         c.sequence[cidx] = s
 
   # end ERROR correction
-
   c.nreads += dna.nreads
   when defined(reads):
     if dna.reads != nil and c.reads == nil:
@@ -220,26 +246,59 @@ proc add*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch:int=3, p_
     echo c
   return true
 
-proc add*(c: Contig, dna: string, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.8, read:string=nil): bool {.inline.} =
-  ## add a sequence to a contig.
+proc make_contig(dna: string): Contig =
+  ## make a contig from a sequence string.
   var bc = new_seq[uint32](dna.len)
   for i in 0..bc.high:
     bc[i] = 1
-  var o: Contig
-  if read == nil:
-    o = Contig(sequence: dna, base_count:bc, nreads: 1)
-  else:
-    o = Contig(sequence: dna, base_count:bc, nreads: 1, reads: @[read])
+  var o = Contig(sequence: dna, base_count:bc, nreads: 1)
   o.mismatch_count = new_seq[uint32](dna.len)
-  return c.add(o, min_overlap, max_mismatch, p_overlap, reverse=false)
+  return o
 
-proc combine*(contigs: var seq[Contig], p_overlap:float64=0.6, reverse:bool=false): seq[Contig] =
+proc insert*(c: Contig, dna: string, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.8): bool {.inline.} =
+  ## add a sequence to a contig.
+  var o = make_contig(dna)
+  return c.insert(o, min_overlap=min_overlap, max_mismatch=max_mismatch, p_overlap=p_overlap)
+
+proc insert*(ctgs:var Contigs, o:var Contig, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.7): bool =
+  ## insert a contig into the best match out of a set of contigs. If a suitable contig is not found, create a new one.
+  ## return value indicates that it was added to an existing contig
+  var matches = new_seq_of_cap[Match](ctgs.len)
+  for c in ctgs:
+    var ma = c.count_matches(o, min_overlap=min_overlap, max_mismatch=max_mismatch, p_overlap=p_overlap)
+    if ma == nil: continue
+    if ma.added: return false
+    matches.add(ma)
+    # we are appending to a seq to find the best match, but if we find one that's very good, we bail early.
+    if ma.mm == 0 and ma.matches > o.len - 5 and ma.matches > 50:
+      if not matches[matches.high].contig.insert(o, match=matches[matches.high]):
+        stderr.write_line("[scrutinize] error adding new contig")
+        quit(2)
+      return true
+  
+  if len(matches) == 0:
+    ctgs.add(o)
+    return false
+
+  matches.sort(match_sort)
+  if not matches[matches.high].contig.insert(o, match=matches[matches.high]):
+    stderr.write_line("[scrutinize] error adding new contig")
+    quit(2)
+  return true
+
+proc insert*(ctgs:var Contigs, dna:string, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.7): bool =
+  ## insert a dna sequence into the best contig or create a new one as needed.
+  var o = make_contig(dna)
+  return ctgs.insert(o, min_overlap=min_overlap, max_mismatch=max_mismatch, p_overlap=p_overlap)
+
+proc combine*(contigs: var Contigs, p_overlap:float64=0.6): seq[Contig] =
   ## merge contigs. note that this modifies the contigs in-place.
   contigs.sort(proc (a, b: Contig): int = return b.len - a.len)
   var used = initSet[int]()
+  # TODO: make this use count_matches
   for i in 0..contigs.high:
     for j in 0..<i:
-      if contigs[i].add(contigs[j], p_overlap=p_overlap, reverse=reverse):
+      if contigs[i].insert(contigs[j], p_overlap=p_overlap):
         used.incl(j)
   if used.len == 0:
     return contigs
@@ -268,17 +327,17 @@ when isMainModule:
 
     c = Contig()
     echo "\nA:\n##"
-    assert c.add(a, p_overlap=0.6)
+    assert c.insert(a, p_overlap=0.6)
     echo "\nB:\n##"
-    assert c.add(b, p_overlap=0.6)
+    assert c.insert(b, p_overlap=0.6)
     assert c.len == dna.len
 
     echo "\nC: add to left end\n##"
-    assert c.add(dna_left, p_overlap=0.6)
+    assert c.insert(dna_left, p_overlap=0.6)
     var sl = c.len()
     assert sl > dna.len
     echo "\nD: add in middle\n##"
-    assert c.add(dna_mid, p_overlap=0.6)
+    assert c.insert(dna_mid, p_overlap=0.6)
     assert sl == c.len(), "should not have longer "
 
     if c.sequence != "CGCGCGCGTAAAAACTCTAGCTATATATACTAATCTCCCTACAAATCTCCTTAATTATAACATTCACAGCCACAGAACTAATCATATTTTATATCTTCTTCGAAACCAC":
@@ -289,37 +348,50 @@ when isMainModule:
     assert join(map(c.base_count, proc(x:uint32): string = $x)) == "1111111112222222222333333333333333444444444444444444444444333333333333333333333333332222222222222222221111111"
 
     c = Contig()
-    assert c.add(         "AAAAACTCTAGCTATATATACTAATCTCCCTACAAATCTCCTTAATTATAACATTCACAGCCACAGAACTAATCATATTTTATATCTTCTTCGAAACCAC")
-    assert c.add("CGCGCGCGTAAAAACTCTAGCTATATATACTAATCTCCCTACAAATCTCCTTAATTAT", p_overlap=0.6)
+    assert c.insert(         "AAAAACTCTAGCTATATATACTAATCTCCCTACAAATCTCCTTAATTATAACATTCACAGCCACAGAACTAATCATATTTTATATCTTCTTCGAAACCAC")
+    assert c.insert("CGCGCGCGTAAAAACTCTAGCTATATATACTAATCTCCCTACAAATCTCCTTAATTAT", p_overlap=0.6)
 
     c = Contig()
-    assert c.add( "AAAAAAAAAAAAATTCCTTTGGGAAGGCCTTCTACATAAAAATCTTCAACATGAGACTGGAAAAAAGGGTATGGGATCATCACCGGACCTTTGGCTTTTA")
+    assert c.insert( "AAAAAAAAAAAAATTCCTTTGGGAAGGCCTTCTACATAAAAATCTTCAACATGAGACTGGAAAAAAGGGTATGGGATCATCACCGGACCTTTGGCTTTTA")
     assert c.nreads == 1
-    assert c.add("AAAAAAAAAAAAAATTCCTTTGGGAAGGCCTTCTACATAAAAATCTTCAACATGAGACTGGAAAAAAGGGTATGGGATCATCACCGGACCTTTGGCTTTTAC")
+    assert c.insert("AAAAAAAAAAAAAATTCCTTTGGGAAGGCCTTCTACATAAAAATCTTCAACATGAGACTGGAAAAAAGGGTATGGGATCATCACCGGACCTTTGGCTTTTAC")
     assert c.nreads == 2
     assert c.sequence == "AAAAAAAAAAAAAATTCCTTTGGGAAGGCCTTCTACATAAAAATCTTCAACATGAGACTGGAAAAAAGGGTATGGGATCATCACCGGACCTTTGGCTTTTAC"
     var bc = join(map(c.base_count, proc(x:uint32): string = $x))
     assert bc ==         "122222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222221"
 
     c = Contig()
-    assert c.add(        "TAACCATAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAA")
-    assert c.add(          "ACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACGG")
+    assert c.insert(        "TAACCATAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAA")
+    assert c.insert(          "ACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACGG")
     assert c.sequence == "TAACCATAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACGG"
     bc = join(map(c.base_count, proc(x:uint32): string = $x))
     assert bc ==         "112221222222222222222222222222222222222222222222222222222222222222222222222111"
 
     c = Contig()
-    assert c.add(        "TAACCATAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAA")
-    assert c.add(          "ACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAAC")
+    assert c.insert(        "TAACCATAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAA")
+    assert c.insert(          "ACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAAC")
     assert c.sequence == "TAACCATAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAACCCTAAC"
     bc = join(map(c.base_count, proc(x:uint32): string = $x))
     assert bc ==         "1122212222222222222222222222222222222222222222222222222222222222222222222221"
 
     c = Contig()
-    assert c.add(        "CTTCTGTGGTCCCAATGAGGTCGATAGTTTTTATTGTGACCTTCCTAGGGTAATCAAACTTGCCTGTACAGATACCTACAGGCTAGATATTATGGTCATTGCTAACAGTGGTGG")
-    assert c.add(                                                 "TTCCTAGGGTAATCAAACTTGCCTGTACAGATACCTACAGGCTAGATATTATGGTCATTGCTAACAGTGGTGTG")
+    assert c.insert(        "CTTCTGTGGTCCCAATGAGGTCGATAGTTTTTATTGTGACCTTCCTAGGGTAATCAAACTTGCCTGTACAGATACCTACAGGCTAGATATTATGGTCATTGCTAACAGTGGTGG")
+    assert c.insert(                                                 "TTCCTAGGGTAATCAAACTTGCCTGTACAGATACCTACAGGCTAGATATTATGGTCATTGCTAACAGTGGTGTG")
     assert c.sequence == "CTTCTGTGGTCCCAATGAGGTCGATAGTTTTTATTGTGACCTTCCTAGGGTAATCAAACTTGCCTGTACAGATACCTACAGGCTAGATATTATGGTCATTGCTAACAGTGGTGGG"
-    assert c.add(                                                 "TTCCTAGGGTAATCAAACTTGCCTGTACAGATACCTACAGGCTAGATATTATGGTCATTGCTAACAGTGGTGTG")
+    assert c.insert(                                                 "TTCCTAGGGTAATCAAACTTGCCTGTACAGATACCTACAGGCTAGATATTATGGTCATTGCTAACAGTGGTGTG")
     # after we accumulate enough mismatches at a given spot, we flip it to a base that matches.
     assert c.sequence == "CTTCTGTGGTCCCAATGAGGTCGATAGTTTTTATTGTGACCTTCCTAGGGTAATCAAACTTGCCTGTACAGATACCTACAGGCTAGATATTATGGTCATTGCTAACAGTGGTGTG"
     echo c.sequence
+
+    var aa = Match(matches: 98, mm: 2)
+    var bb = Match(matches: 100, mm: 4)
+    var mas = @[aa, bb]
+    mas.sort(match_sort)
+    assert mas[0].matches == 98
+    aa.matches = 100
+    mas.sort(match_sort)
+    assert mas[0].mm == 4
+    assert mas[0].matches == 100
+    assert mas[1].matches == 100
+
+
