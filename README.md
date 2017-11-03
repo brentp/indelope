@@ -17,5 +17,3 @@
 ## TODO:
 1. first merge reads looking at variant quality.
 2. merge and vote but keep separate anything where support for either is >= 5
-3. TODO: first trim reads before putting them into contig?
-4. expand region by keeping normal reads at bounds.

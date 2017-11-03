@@ -103,7 +103,7 @@ when isMainModule:
 
   var b:Bam
   var bqs = new_seq[uint8]()
-  open(b, "t.bam", index=true)
+  open(b, "u.bam", index=true)
   #.query("16", 29088058, 29088060):
   for rec in b:
     if rec.flag.secondary: continue
