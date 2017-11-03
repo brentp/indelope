@@ -51,28 +51,32 @@ proc high*(c:Contig): int {.inline.} =
 
 proc trim*(c:Contig, min_support:int=2) =
   ## trim bases in a contig that do not have at least `min_support`
-  var a: int
-  while c.base_count[a] < uint32(min_support) and a < c.len:
+  var a = 0
+  while a < c.high and c.base_count[a] < uint32(min_support):
     a += 1
+
+  if a >= c.high:
+    c.sequence.set_len(0)
+    c.base_count.set_len(0)
+    c.mismatch_count.set_len(0)
+    return
 
   var b = c.high
   while c.base_count[b] < uint32(min_support) and b > a:
     b -= 1
 
-  if a > 0 or b < c.high:
+  if a > 0 or b <= c.high:
     c.base_count = c.base_count[a..b]
     c.sequence = c.sequence[a..b]
     c.mismatch_count = c.mismatch_count[a..b]
 
-proc fastq*(c:Contig, s:var string, name=""): string =
+proc fastq*(c:Contig, s:var string, name:string=""): string =
   ## return the 4 line fastq string for the record.
   ## the base-quality is the number of reads supporting each base.
   s.set_len(0)
-  s.add "@contig:"
-  if name != "":
-    s.add name & ":"
-  s.add "nreads=" & $c.nreads & ":"
-  s.add "len=" & $c.len & ":"
+  s.add "@" & name & "#"
+  s.add "nreads=" & $c.nreads & "#"
+  s.add "len=" & $c.len
   s.add "\n"
 
   s.add c.sequence
@@ -113,7 +117,7 @@ proc `$`*(c: Contig): string =
       pow += 1
     result.add("\n")
 
-proc count_matches*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.7): Match =
+proc count_matches*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch:int=0, p_overlap:float64=0.7): Match =
   ## add a dna sequence to the contig. return indicates if it was added.
   if c.sequence == nil:
     c.sequence = dna.sequence
@@ -168,7 +172,7 @@ proc count_matches*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch
   return Match(matches: max_ma, added: false, contig: c,
       offset: max_ma_offset, mm: min_mm, sub: max_sub)
 
-proc insert*(c: Contig, dna: var Contig, match:Match=nil, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.7): bool =
+proc insert*(c: Contig, dna: var Contig, match:Match=nil, min_overlap:int=40, max_mismatch:int=0, p_overlap:float64=0.7): bool =
   var matches = match
   if matches == nil:
     matches = c.count_matches(dna, min_overlap=min_overlap, max_mismatch=max_mismatch, p_overlap=p_overlap)
@@ -288,39 +292,42 @@ proc make_contig(dna: string): Contig =
   o.mismatch_count = new_seq[uint32](dna.len)
   return o
 
-proc insert*(c: Contig, dna: string, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.8): bool {.inline.} =
+proc insert*(c: Contig, dna: string, min_overlap:int=40, max_mismatch:int=1, p_overlap:float64=0.75): bool {.inline.} =
   ## add a sequence to a contig.
   ## return value indicates that it was added to an existing contig
   var o = make_contig(dna)
   return c.insert(o, min_overlap=min_overlap, max_mismatch=max_mismatch, p_overlap=p_overlap)
 
-proc insert*(ctgs:var Contigs, o:var Contig, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.7): bool =
-  ## insert a contig into the best match out of a set of contigs. If a suitable contig is not found, create a new one.
-  ## return value indicates that it was added to an existing contig
+proc count_matches(ctgs: Contigs, o: var Contig, min_overlap:int=40, max_mismatch:int=0, p_overlap:float64=0.7): seq[Match] =
   var matches = new_seq_of_cap[Match](ctgs.len)
   for c in ctgs:
     var ma = c.count_matches(o, min_overlap=min_overlap, max_mismatch=max_mismatch, p_overlap=p_overlap)
     if ma == nil: continue
-    if ma.added: return false
+    if ma.added: return @[ma]
     matches.add(ma)
     # we are appending to a seq to find the best match, but if we find one that's very good, we bail early.
-    if ma.mm == 0 and ma.matches > o.len - 5 and ma.matches > 50:
-      if not matches[matches.high].contig.insert(o, match=matches[matches.high]):
-        stderr.write_line("[scrutinize] error adding new contig")
-        quit(2)
-      return true
-  
+    if ma.mm == 0 and ma.matches > (o.len - 5) and ma.matches > 50:
+      return @[ma]
+
+  matches.sort(match_sort)
+  return matches
+
+proc insert*(ctgs:var Contigs, o:var Contig, min_overlap:int=40, max_mismatch:int=0, p_overlap:float64=0.7): bool =
+  ## insert a contig into the best match out of a set of contigs. If a suitable contig is not found, create a new one.
+  ## return value indicates that it was added to an existing contig
+  var matches = ctgs.count_matches(o, min_overlap=min_overlap, max_mismatch=max_mismatch, p_overlap=p_overlap)
   if len(matches) == 0:
     ctgs.add(o)
     return false
+  if len(matches) == 1 and matches[0].added:
+    return false
 
-  matches.sort(match_sort)
   if not matches[matches.high].contig.insert(o, match=matches[matches.high]):
     stderr.write_line("[scrutinize] error adding new contig")
     quit(2)
   return true
 
-proc insert*(ctgs:var Contigs, dna:string, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.7): bool =
+proc insert*(ctgs:var Contigs, dna:string, min_overlap:int=40, max_mismatch:int=0, p_overlap:float64=0.7): bool =
   ## insert a dna sequence into the best contig or create a new one as needed.
   ## return value indicates that it was added to an existing contig
   var o = make_contig(dna)

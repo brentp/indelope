@@ -1,4 +1,5 @@
 import assemble
+import queues
 import sequtils
 import os
 import times
@@ -62,7 +63,7 @@ proc get_insert_size(b: Bam): insert_size_stats =
 
 
 proc write_to(r:Record, fh:File, sequence:var string, baseqs:var seq[uint8]) =
-  fh.write_line("@" & r.qname & " " & r.chrom & ":" & intToStr(r.start) & "-" & intToStr(r.stop))
+  fh.write_line("@" & r.qname & " " & r.chrom & ":" & intToStr(r.start+1) & "-" & intToStr(r.stop))
   fh.write_line(r.sequence(sequence))
   fh.write_line("+")
   discard r.base_qualities(baseqs)
@@ -85,40 +86,143 @@ iterator to_intervals(arr: seq[bool]): se =
   if gt0:
     yield (start, arr.len)
 
+
+proc trim(sequence: var string, base_qualities: seq[uint8], min_quality:int=12) =
+  var a = 0
+  while a < base_qualities.high and base_qualities[a] < uint8(min_quality):
+    a += 1
+
+  if a == base_qualities.high:
+    sequence.set_len(0)
+    return
+
+  var b = base_qualities.high
+  while b > a and base_qualities[b] < uint8(min_quality):
+    b -= 1
+
+  if a != 0 or b != base_qualities.high:
+    sequence = sequence[a..b]
+
 proc assemble(tid:int, arr:seq[bool], b:Bam) =
+  var counter: int
   var sequence = ""
-  var nn = 0
+  var bqs = new_seq[uint8]()
+  var chrom = b.hdr.targets[tid].name
   for iv in arr.to_intervals():
     var ctgs = new_seq[Contig]()
     var k: int
     var t = cpuTime()
     for r in b.queryi(tid, iv.start, iv.stop):
       if r.cigar.len == 1 and not r.flag.unmapped: continue
+
       discard r.sequence(sequence)
+      #echo r.qname
+      #echo r.base_qualities(bqs)
       var tmp = sequence
       discard ctgs.insert(tmp)
       k += 1
     # TODO: for each contig, extend the flanks with good reads to improve alignment.
     if k < 4: continue
-    var cmb = ctgs.combine(p_overlap=0.5)
-    if cmb[0].len < 125: continue
-    #echo ">time:", cpuTime() - t
-    #echo ">", tid, " ", iv, " alignments:", k, " ctgs:", len(ctgs), " combined:", len(cmb), " longest:", cmb[0].len, " nreads:", cmb[0].nreads
-    for ctg in cmb:
-      if ctg.len < 125: break
-      echo "@seq" & $nn & ":" & b.hdr.targets[tid].name & ":" & $iv.start & "-" & $iv.stop
-      echo ctg.sequence
-      echo "+"
-      echo join(cast[string](map(ctg.base_count, proc(i:uint32): char = return cast[char](min(90, int(i+33))) )))
+    ctgs = ctgs.combine(p_overlap=0.5)
+    for ctg in ctgs:
+      ctg.trim()
+    ctgs = ctgs.combine(p_overlap=0.5)
+    if ctgs[0].len < 125: continue
 
-      nn += 1
-    if nn > 10:
-      quit(0)
-    #  echo ctg.base_count
-    #  quit(0)
-    #  assert ctg.sequence.len == ctg.base_count.len
+    var fq = ""
+    for nc, ctg in ctgs:
+      ctg.trim()
+      if ctg.len < 125: break
+      write(stdout, ctg.fastq(fq, name=chrom & ":" & $(iv.start) & "-" & $(iv.stop) & "_" & $nc))
 
 const pad:int = 100
+
+type cached_seq = tuple[start: int, stop: int, sequence: string]
+
+proc dump_contigs(ctgs: var Contigs, chrom: string, start: int, stop: int) =
+  ctgs = ctgs.combine(p_overlap=0.5)
+  for ctg in ctgs:
+    ctg.trim()
+  ctgs = ctgs.combine(p_overlap=0.5)
+  var fq = ""
+  for nc, ctg in ctgs:
+    if ctg.len < 125: break
+    ctg.trim()
+    if ctg.len < 125: break
+    write(stdout, ctg.fastq(fq, name=chrom & ":" & $(start + 1) & "-" & $stop & "_" & $nc))
+
+proc assembler(path: string, opath: string) =
+  var b: Bam
+  open(b, path, index=true)
+
+  var sequence = ""
+  var bqs = new_seq[uint8]()
+  var ctgs : seq[Contig]
+  var region : string
+  var targets: seq[string]
+  
+  #region = "2:40882229-40882499"
+  if region == nil:
+    targets = map(b.hdr.targets, proc(a: Target): string = return a.name)
+  else:
+    targets = @[region]
+
+  for target in targets:
+    ctgs = new_seq[Contig]()
+    var q = new_seq_of_cap[cached_seq](20)
+    var last_start = -1000
+    var last_stop = -1000
+    for r in b.querys(target):
+      if r.chrom == "hs37d5": continue
+      if r.chrom.startswith("GL"): continue
+      if r.chrom.startswith("GL"): continue
+      var f = r.flag
+      if f.dup or f.qcfail or f.unmapped: continue
+      if f.supplementary or f.secondary: continue
+
+      discard r.sequence(sequence)
+      discard r.base_qualities(bqs)
+      var tmp = sequence
+      tmp.trim(bqs)
+      if tmp.len < 50: continue
+
+      var is_informative = r.aux("SA") != nil or r.cigar.len > 1
+
+      # too far, so start a new region
+      if (r.start - last_stop) > 50:
+        while q.len > 0:
+          var cs = q.pop()
+          # try to make the contigs a bit larger, here on the right side
+          if cs.start > last_stop: break
+          discard ctgs.insert(cs.sequence)
+        dump_contigs(ctgs, target, last_start, last_stop)
+
+        # make a new set of contigs
+        ctgs = new_seq[Contig]()
+        if is_informative:
+          last_start = r.start
+          # extend the contig on the left size
+          while q.len > 0:
+            var cs = q.pop()
+            if cs.stop < r.start:
+              continue
+            discard ctgs.insert(cs.sequence)
+
+      if is_informative:
+        discard ctgs.insert(tmp)
+        last_stop = max(last_stop, r.stop)
+
+      else: # even perfect reads can be used to extend contigs.
+
+        while q.len > 30: discard q.pop
+        q.add((r.start, r.stop, tmp))
+
+
+
+    dump_contigs(ctgs, target, last_start, last_stop)
+
+
+
 
 proc find_reads_of_interest(path:string, opath:string) =
   var b1:Bam
@@ -144,10 +248,10 @@ proc find_reads_of_interest(path:string, opath:string) =
       if last_tid != -1:
         var k = 0
         assemble(last_tid, arr, b1)
-        echo targets[last_tid].name, ":", k
       last_tid = r.b.core.tid
       arr = new_seq[bool](targets[last_tid].length)
     if r.chrom == "hs37d5": continue
+    if r.chrom.startswith("GL"): continue
     var f = r.flag
     if f.dup or f.qcfail or f.unmapped: continue
     if f.supplementary or f.secondary: continue
@@ -162,6 +266,6 @@ proc find_reads_of_interest(path:string, opath:string) =
 
 when isMainModule:
 
-  echo(commandLineParams())
-  find_reads_of_interest(commandLineParams()[0], "xx")
+  #find_reads_of_interest(commandLineParams()[0], "xx")
+  assembler(commandLineParams()[0], "xx")
   
