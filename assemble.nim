@@ -13,7 +13,6 @@ type
     sequence*: string
     base_count*: seq[uint32]
     mismatch_count*: seq[uint32]
-    reversed: bool # flipped when revcomped
     nreads*: int
     # TODO: remove this. just for debugging
     reads: seq[string]
@@ -24,14 +23,12 @@ type
     offset: int
     mm: int
     sub: string
-    reversed: bool
     contig: Contig
 
 proc revcomp(c: var Contig) =
   c.base_count.reverse
   c.sequence.reverse
   c.mismatch_count.reverse
-  c.reversed = not c.reversed
   for i, ch in c.sequence:
     c.sequence[i] = complement[ch.int]
 
@@ -133,7 +130,7 @@ proc count_matches*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch
     return nil
 
   return Match(matches: max_ma, added: false, contig: c,
-      offset: max_ma_offset, mm: min_mm, sub: max_sub, reversed: dna.reversed)
+      offset: max_ma_offset, mm: min_mm, sub: max_sub)
 
 proc insert*(c: Contig, dna: var Contig, match:Match=nil, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.7): bool =
   var matches = match
@@ -141,9 +138,6 @@ proc insert*(c: Contig, dna: var Contig, match:Match=nil, min_overlap:int=40, ma
     matches = c.count_matches(dna, min_overlap=min_overlap, max_mismatch=max_mismatch, p_overlap=p_overlap)
     if matches == nil: return false
     if matches.added: return true
-
-  if matches.reversed != dna.reversed:
-    revcomp(dna)
 
   if DEBUG:
     var x = ""
@@ -257,6 +251,7 @@ proc make_contig(dna: string): Contig =
 
 proc insert*(c: Contig, dna: string, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.8): bool {.inline.} =
   ## add a sequence to a contig.
+  ## return value indicates that it was added to an existing contig
   var o = make_contig(dna)
   return c.insert(o, min_overlap=min_overlap, max_mismatch=max_mismatch, p_overlap=p_overlap)
 
@@ -288,6 +283,7 @@ proc insert*(ctgs:var Contigs, o:var Contig, min_overlap:int=40, max_mismatch:in
 
 proc insert*(ctgs:var Contigs, dna:string, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.7): bool =
   ## insert a dna sequence into the best contig or create a new one as needed.
+  ## return value indicates that it was added to an existing contig
   var o = make_contig(dna)
   return ctgs.insert(o, min_overlap=min_overlap, max_mismatch=max_mismatch, p_overlap=p_overlap)
 

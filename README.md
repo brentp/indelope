@@ -17,5 +17,4 @@
 
 ## TODO:
 1. first merge reads looking at variant quality.
-2. then merge and vote but keep separate anything where support for either is >= 5
-3. for short contigs, re-query at flanks to extend region
+2. merge and vote but keep separate anything where support for either is >= 5

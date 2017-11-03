@@ -96,12 +96,11 @@ proc assemble(tid:int, arr:seq[bool], b:Bam) =
       if r.cigar.len == 1 and not r.flag.unmapped: continue
       discard r.sequence(sequence)
       var tmp = sequence
-      if ctgs.insert(tmp):
-        ctgs = ctgs.combine()
+      discard ctgs.insert(tmp)
       k += 1
     # TODO: for each contig, extend the flanks with good reads to improve alignment.
     if k < 4: continue
-    var cmb = ctgs.combine(p_overlap=0.4)
+    var cmb = ctgs.combine(p_overlap=0.5)
     if cmb[0].len < 125: continue
     #echo ">time:", cpuTime() - t
     #echo ">", tid, " ", iv, " alignments:", k, " ctgs:", len(ctgs), " combined:", len(cmb), " longest:", cmb[0].len, " nreads:", cmb[0].nreads
@@ -113,7 +112,6 @@ proc assemble(tid:int, arr:seq[bool], b:Bam) =
       echo join(cast[string](map(ctg.base_count, proc(i:uint32): char = return cast[char](min(90, int(i+33))) )))
 
       nn += 1
-      break
     if nn > 10:
       quit(0)
     #  echo ctg.base_count
