@@ -49,6 +49,43 @@ proc len*(c:Contig): int {.inline.} =
 proc high*(c:Contig): int {.inline.} =
   return c.sequence.len - 1
 
+proc trim*(c:Contig, min_support:int=2) =
+  ## trim bases in a contig that do not have at least `min_support`
+  var a: int
+  while c.base_count[a] < uint32(min_support) and a < c.len:
+    a += 1
+
+  var b = c.high
+  while c.base_count[b] < uint32(min_support) and b > a:
+    b -= 1
+
+  if a > 0 or b < c.high:
+    c.base_count = c.base_count[a..b]
+    c.sequence = c.sequence[a..b]
+    c.mismatch_count = c.mismatch_count[a..b]
+
+proc fastq*(c:Contig, s:var string, name=""): string =
+  ## return the 4 line fastq string for the record.
+  ## the base-quality is the number of reads supporting each base.
+  s.set_len(0)
+  s.add "@contig:"
+  if name != "":
+    s.add name & ":"
+  s.add "nreads=" & $c.nreads & ":"
+  s.add "len=" & $c.len & ":"
+  s.add "\n"
+
+  s.add c.sequence
+  s.add "\n"
+
+  s.add "+\n"
+
+  s.add join(cast[string](map(c.base_count, proc(i:uint32): char = return cast[char](min(90, int(i+33))) )))
+  s.add "\n"
+
+  result = s
+
+
 const line_len = 160
 
 proc `$`*(c: Contig): string =
@@ -75,7 +112,6 @@ proc `$`*(c: Contig): string =
       result.add("\n")
       pow += 1
     result.add("\n")
-
 
 proc count_matches*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch:int=3, p_overlap:float64=0.7): Match =
   ## add a dna sequence to the contig. return indicates if it was added.
@@ -151,6 +187,8 @@ proc insert*(c: Contig, dna: var Contig, match:Match=nil, min_overlap:int=40, ma
       echo "CTG :", c.sequence
       echo "READ:", x & dna.sequence
 
+  if matches.mm > max_mismatch:
+    return false
 
   if matches.offset >= 0:
     # add sequence ot the right end (or middle).
@@ -222,8 +260,9 @@ proc insert*(c: Contig, dna: var Contig, match:Match=nil, min_overlap:int=40, ma
       if cidx == c.sequence.len: break
       if c.mismatch_count[cidx] > c.base_count[cidx]:
         # switch to more likely base
-        c.base_count[cidx] += c.mismatch_count[cidx]
-        c.mismatch_count[cidx] = 0
+        var tmp = c.mismatch_count[cidx]
+        c.mismatch_count[cidx] = c.base_count[cidx]
+        c.base_count[cidx] = tmp
         c.sequence[cidx] = s
 
   # end ERROR correction
@@ -391,3 +430,10 @@ when isMainModule:
     assert mas[1].matches == 100
 
 
+    c = Contig()
+    assert c.insert(a)
+    assert c.insert(b, p_overlap=0.6)
+
+    echo $c
+    c.trim()
+    assert c.sequence == "CTCCCTACAAATCTCCTTAATTATAACATTCACAGCCACAGAACTAATCA"
