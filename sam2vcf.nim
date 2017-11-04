@@ -1,3 +1,4 @@
+import os
 import strutils
 import sequtils
 import hts
@@ -15,7 +16,7 @@ type
 
   Variant* = ref object of RootObj
     chrom*: string
-    pos*: int
+    start*: int
     stop*: int
     reference*: string
     alternate*: string
@@ -25,6 +26,7 @@ type
     GQ*: int
 
 proc info(r: Record): Info =
+  ## information was encoded in the read name. extract it.
   var rnrl = r.qname.split("#", 4)
   var region = rnrl[0]
   var cse = region.split(":", 1)
@@ -71,7 +73,7 @@ iterator as_sa_variant(r: Record, sa: string, loc:Info, bqs: seq[uint8]): Varian
   var sas = sa.strip(chars={';'}).split(';')
   # using while loop so we can break as no StopIteration in nim
   while sas.len == 1: # only do stuff with a single split
-    var v = Variant(chrom:r.chrom, pos: r.stop)
+    var v = Variant(chrom:r.chrom, start: r.stop)
     var sat = sas[0].split(',')
     if sat[0] != r.chrom:
       break
@@ -83,7 +85,7 @@ iterator as_sa_variant(r: Record, sa: string, loc:Info, bqs: seq[uint8]): Varian
     v.stop = parse_int(svstop)
     v.reference = "N"
 
-    if v.stop > v.pos:
+    if v.stop > v.start:
       v.alternate = "<DEL>"
     else:
       echo "FIX ME ", r
@@ -97,42 +99,69 @@ iterator as_sa_variant(r: Record, sa: string, loc:Info, bqs: seq[uint8]): Varian
     yield v
     break
 
-proc createVariant(vstart:int, vstop:int, r:Record, bqs: seq[uint8], loc:Info): Variant =
-  var v = Variant(chrom: r.chrom, pos: vstart, stop: vstop)
-  if v.pos == v.stop:
-    v.alternate = "<INS>"
+proc createVariant(vstart:int, vstop:int, r:Record, bqs: seq[uint8], loc:Info, o:Op, fa:Fai): Variant =
+  var v = Variant(chrom: r.chrom, start: vstart + r.start, stop: vstop + r.start)
+  if not o.consumes.reference:
+    var s: string = ""
+    discard r.sequence(s)
+    v.alternate = s[(vstart - 1)..<(vstart + o.len)]
+    #v.reference = fa.get(r.chrom, v.start, v.start)
+    v.reference = v.alternate[0..<1]
   else:
-    v.alternate = "<DEL>"
-  v.reference = "N"
+    # subtract 1 because we need an extra anchor base for the start
+    v.reference = fa.get(r.chrom, v.start - 1, v.stop - 1)
+    v.alternate = v.reference[0..<1]
+    #v.alternate = "<DEL>"
   v.quality = uint8(r.qual)
   v.AD[0] = 0 # TODO:
   v.AD[1] = loc.nreads
   return v
 
-iterator as_variant*(r: Record, loc: Info, bqs: seq[uint8]): Variant =
+iterator as_variant*(r: Record, loc: Info, bqs: seq[uint8], fa: Fai): Variant =
   var sa = r.aux("SA")
   if sa != nil:
     discard sa.tostring
     #for res in r.as_sa_variant(sa.tostring, loc, bqs):
     #  yield res
     
-  var vstart = r.start
+  var vstart = 0
   for o in r.cigar:
     if o.op in {CigarOp.insert, CigarOp.deletion}:
       var vstop = vstart
       if o.consumes.reference:
         vstop += o.len
 
-      yield createVariant(vstart, vstop, r, bqs, loc)
+      yield createVariant(vstart, vstop, r, bqs, loc, o, fa)
     if o.consumes.reference:
         vstart += o.len
 
+var header = """##fileformat=VCFv4.2
+##FORMAT=<ID=AD,Number=A,Type=Integer,Description="Allelic depths for the ref and alt alleles in the order listed">
+##INFO=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the ref and alt alleles in the order listed">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">
+##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Difference in length between REF and ALT alleles">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Approximate read depth (reads with MQ=255 or with bad mates are filtered)">
+##FORMAT=<ID=GQ,Number=1,Type=Float,Description="Genotype Quality">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=PL,Number=G,Type=Integer,Description="Normalized, Phred-scaled likelihoods for genotypes as defined in the VCF specification">
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Approximate read depth; some reads may have been filtered">
+$1
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO"""
+#
+
+proc make_contig_header(t:Target): string =
+  return "##contig=<ID=$1,length=$2>" % [t.name, $t.length]
+
+proc contig_header(b: Bam): string =
+  return join(map(b.hdr.targets, make_contig_header), "\n")
 
 when isMainModule:
 
   var b:Bam
   var bqs = new_seq[uint8]()
-  open(b, "xxt.bam", index=true)
+  open(b, commandLineParams()[0], index=true)
+  var fai = open_fai(commandLineParams()[1])
+  echo(header % [b.contig_header])
   #.query("16", 29088058, 29088060):
   for rec in b:
     if rec.flag.secondary: continue
@@ -142,13 +171,13 @@ when isMainModule:
     discard rec.base_qualities(bqs)
 
     # #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	A	B
-    for v in rec.as_variant(loc, bqs):
-      echo(v.chrom, "\t", $(v.pos + 1), "\t",
+    for v in rec.as_variant(loc, bqs, fai):
+      echo(v.chrom, "\t", $(v.start), "\t",
         "ID\t",
         v.reference, "\t",
         v.alternate, "\t",
         $(v.quality), "\t",
         "PASS\t",
-        "END=" & $(v.stop + 1),
-        ";SVLEN=" & $(v.stop - v.pos + 1),
+        "END=" & $(v.stop),
+        ";SVLEN=" & $(v.stop - v.start),
         ";AD=" & $v.AD[0] & "," & $v.AD[1])
