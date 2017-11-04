@@ -1,3 +1,5 @@
+## indelope: find medium sized indels with local realignment
+
 + iterate through bam and note locations of
   - discordant (by ISIZE)
   - split reads (SA tag)

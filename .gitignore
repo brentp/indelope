@@ -1,4 +1,5 @@
 nimcache
+*.swp
 *.fq
 *.sam
 *.bam
@@ -7,4 +8,4 @@ nimcache
 assemble
 scrutinize
 tests/all
-tests/assemle_test
+tests/assemble_test
