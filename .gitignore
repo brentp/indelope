@@ -6,3 +6,5 @@ nimcache
 *.fastq
 assemble
 scrutinize
+tests/all
+tests/assemle_test
