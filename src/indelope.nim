@@ -1,3 +1,4 @@
+import osproc
 import assemble
 import queues
 import sequtils
@@ -26,31 +27,36 @@ proc trim(sequence: var string, base_qualities: seq[uint8], min_quality:int=12) 
   if a != 0 or b != base_qualities.high:
     sequence = sequence[a..b]
 
-const pad:int = 100
-
 type cached_seq = tuple[start: int, stop: int, sequence: string]
 
-proc dump_contigs(fq: File, ctgs: var Contigs, chrom: string, start: int, stop: int, min_reads:int=4, min_ctg_length:int=150) =
+proc dump_contigs(fq: File, ctgs: var Contigs, chrom: string, start: int, stop: int, min_reads:int, min_ctg_length:int) =
   ctgs = ctgs.combine(p_overlap=0.5)
   for ctg in ctgs:
     ctg.trim()
   ctgs = ctgs.combine(p_overlap=0.5)
-  var fq_line = ""
+  var fq_line = new_string_of_cap(500)
   for nc, ctg in ctgs:
     if ctg.len < min_ctg_length: break
     if ctg.nreads < min_reads: continue
     ctg.trim()
     if ctg.len < min_ctg_length: break
-    write(fq, ctg.fastq(fq_line, name=chrom & ":" & $(start + 1) & "-" & $stop & "_" & $nc))
+    fq.write(ctg.fastq(fq_line, name=chrom & ":" & $(start + 1) & "-" & $stop & "_" & $nc))
 
-proc assembler(path: string, prefix: string, min_reads:int=5, min_ctg_length:int=150) =
+proc align(prefix: string, reference: string) =
+   var ret = execCmd("bash -c 'set -eo pipefail; bwa mem -k 21 -L 3 $1 $2.fastq | samtools sort -o $3.bam && samtools index $4.bam'" % [reference, prefix, prefix, prefix])
+   if ret != 0:
+     quit(ret)
+  
+
+proc assembler(path: string, prefix: string, min_reads:int=5, min_ctg_length:int=150): string =
   var b: Bam
   open(b, path, index=true)
   var fq: File
   var fname = prefix
   fname = fname.strip(chars={'.'}) & ".fastq"
 
-  assert open(fq, fname, fmWrite)
+  if not open(fq, fname, fmWrite):
+    quit(2)
 
   var sequence = ""
   var bqs = new_seq[uint8]()
@@ -116,6 +122,8 @@ proc assembler(path: string, prefix: string, min_reads:int=5, min_ctg_length:int
 
     fq.dump_contigs(ctgs, target, last_start, last_stop, min_reads=min_reads, min_ctg_length=min_ctg_length)
 
+  close(fq)
+  return fname
 
 
 when isMainModule:
@@ -127,22 +135,26 @@ when isMainModule:
 
 Arguments:
 
+	<prefix>      output prefix.
   <BAM-or-CRAM> call variants in this file.
 
 Options:
   
-  -m --min-reads       <INT>      minimum number of reads to send for alignment [default: 3]
-  -c --min-contig-len  <INT>      minimum contig length to send for alignment [default: 120]
-  -p --output-prefix   <STR>      prefix for output files [default: indelope]
+  -r --reference <STR>      path to bwa indexed reference
+  -m --min-reads <INT>      minimum number of reads to send for alignment [default: 3]
+  -c --min-contig-len <INT>      minimum contig length to send for alignment [default: 120]
   -h --help                       show help
 
   """ % ["version", version])
 
-  let args = docopt(doc, version = version)
+  let
+     args = docopt(doc, version = version)
+     min_reads = parse_int($args["--min-reads"])
+     min_ctg_length = parse_int($args["--min-contig-len"])
+     cram_path = $args["<BAM-or-CRAM>"]
 
-  let min_reads = parse_int($args["--min-reads"])
-  let min_ctg_length = parse_int($args["--min-contig-len"])
-  let cram_path = $args["<BAM-or-CRAM>"]
-
-  assembler(cram_path, $args["prefix"], min_reads=min_reads, min_ctg_length=min_ctg_length)
-  
+  let fastq = assembler(cram_path, $args["<prefix>"], min_reads=min_reads, min_ctg_length=min_ctg_length)
+  align($args["<prefix>"], $args["--reference"])
+  let bam = $args["<prefix>"] & ".bam"
+  echo $bam
+  echo "now find indels"

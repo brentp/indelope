@@ -1,4 +1,5 @@
 import strutils
+import sequtils
 import hts
 
 discard """
@@ -18,7 +19,7 @@ type
     stop*: int
     reference*: string
     alternate*: string
-    quality*: string
+    quality*: uint8
     AD*: array[2, int]
     GT*: string
     GQ*: int
@@ -37,22 +38,28 @@ proc `$`*(i: Info): string =
 proc likely_variant(r: Record, i:Info): bool =
   if r.chrom != i.chrom: return false # TODO: might mis translocations.
 
-  if r.start > (i.stop + 100): return false
-  if i.start > (r.stop + 100): return false
-  if r.qual < 10: return false
+  #if r.start > (i.stop + 100): return false
+  #if i.start > (r.stop + 100): return false
+  if r.qual < 5: return false
   if i.nreads < 3: return false
 
   var sa = r.aux("SA")
   if r.cigar.len == 1 and sa == nil: return false
+  if r.cigar.len > 5: return false
 
   var nm = r.aux("NM")
-  if nm != nil and nm.integer() > 2: return false
+  var insertion_bases = 0
+  for o in r.cigar:
+      if o.op in {CigarOp.insert, CigarOp.deletion}:
+        insertion_bases += o.len 
+  # don't allow more than 2 mismatches. insertions are counted as mismatches.
+  if nm != nil and nm.integer() > (insertion_bases + 2): return false
 
   var min_len = 200
   for op in r.cigar:
     if op.len < min_len:
       min_len = op.len
-  if min_len < 4: return false
+  if min_len < 3: return false
   var s = "nil"
   if sa != nil:
     s = sa.tostring()
@@ -90,20 +97,42 @@ iterator as_sa_variant(r: Record, sa: string, loc:Info, bqs: seq[uint8]): Varian
     yield v
     break
 
+proc createVariant(vstart:int, vstop:int, r:Record, bqs: seq[uint8], loc:Info): Variant =
+  var v = Variant(chrom: r.chrom, pos: vstart, stop: vstop)
+  if v.pos == v.stop:
+    v.alternate = "<INS>"
+  else:
+    v.alternate = "<DEL>"
+  v.reference = "N"
+  v.quality = uint8(r.qual)
+  v.AD[0] = 0 # TODO:
+  v.AD[1] = loc.nreads
+  return v
 
 iterator as_variant*(r: Record, loc: Info, bqs: seq[uint8]): Variant =
   var sa = r.aux("SA")
   if sa != nil:
-    for res in r.as_sa_variant(sa.tostring, loc, bqs):
-      yield res
-  else: # TODO: sa reads might also have other stuff
-    echo r.qname, " ", $r.cigar, " ", r.chrom, ":", r.start
+    discard sa.tostring
+    #for res in r.as_sa_variant(sa.tostring, loc, bqs):
+    #  yield res
+    
+  var vstart = r.start
+  for o in r.cigar:
+    if o.op in {CigarOp.insert, CigarOp.deletion}:
+      var vstop = vstart
+      if o.consumes.reference:
+        vstop += o.len
+
+      yield createVariant(vstart, vstop, r, bqs, loc)
+    if o.consumes.reference:
+        vstart += o.len
+
 
 when isMainModule:
 
   var b:Bam
   var bqs = new_seq[uint8]()
-  open(b, "u.bam", index=true)
+  open(b, "xxt.bam", index=true)
   #.query("16", 29088058, 29088060):
   for rec in b:
     if rec.flag.secondary: continue
@@ -112,5 +141,14 @@ when isMainModule:
     if not rec.likely_variant(loc): continue
     discard rec.base_qualities(bqs)
 
+    # #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	A	B
     for v in rec.as_variant(loc, bqs):
-      echo "YAY:", v.chrom, " ", v.pos, " ", v.stop, " ", v.AD[1]
+      echo(v.chrom, "\t", $(v.pos + 1), "\t",
+        "ID\t",
+        v.reference, "\t",
+        v.alternate, "\t",
+        $(v.quality), "\t",
+        "PASS\t",
+        "END=" & $(v.stop + 1),
+        ";SVLEN=" & $(v.stop - v.pos + 1),
+        ";AD=" & $v.AD[0] & "," & $v.AD[1])
