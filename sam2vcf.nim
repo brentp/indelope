@@ -99,19 +99,21 @@ iterator as_sa_variant(r: Record, sa: string, loc:Info, bqs: seq[uint8]): Varian
     yield v
     break
 
-proc createVariant(vstart:int, vstop:int, r:Record, bqs: seq[uint8], loc:Info, o:Op, fa:Fai): Variant =
-  var v = Variant(chrom: r.chrom, start: vstart + r.start, stop: vstop + r.start)
+proc add_ref_alt(v:var Variant, vstart:int, vstop:int, sequence: string, o:Op, fa:Fai) =
   if not o.consumes.reference:
-    var s: string = ""
-    discard r.sequence(s)
-    v.alternate = s[(vstart - 1)..<(vstart + o.len)]
+    v.alternate = sequence[(vstart - 1)..<(vstart + o.len)]
     #v.reference = fa.get(r.chrom, v.start, v.start)
     v.reference = v.alternate[0..<1]
   else:
     # subtract 1 because we need an extra anchor base for the start
-    v.reference = fa.get(r.chrom, v.start - 1, v.stop - 1)
+    v.reference = fa.get(v.chrom, v.start - 1, v.stop - 1)
     v.alternate = v.reference[0..<1]
-    #v.alternate = "<DEL>"
+
+proc createVariant(vstart:int, vstop:int, r:Record, bqs: seq[uint8], loc:Info, o:Op, fa:Fai): Variant =
+  var sequence: string = ""
+  var v = Variant(chrom: r.chrom, start: vstart + r.start, stop: vstop + r.start)
+  discard r.sequence(sequence)
+  v.add_ref_alt(vstart, vstop, sequence, o, fa)
   v.quality = uint8(r.qual)
   v.AD[0] = 0 # TODO:
   v.AD[1] = loc.nreads
