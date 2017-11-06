@@ -40,7 +40,9 @@ proc dump_contigs(fq: File, ctgs: var Contigs, chrom: string, start: int, stop: 
     if ctg.nreads < min_reads: continue
     ctg.trim()
     if ctg.len < min_ctg_length: break
-    fq.write(ctg.fastq(fq_line, name=chrom & ":" & $(start + 1) & "-" & $stop & "_" & $nc))
+    if nc == 0:
+      echo "n contigs:", len(ctgs)
+    fq.write(ctg.fastq(fq_line, name=chrom & ":" & $(start + 1) & "-" & $stop & "#" & $(nc + 1) & "_of_" & $ctgs.len))
 
 proc align(prefix: string, reference: string) =
    var ret = execCmd("bash -c 'set -eo pipefail; bwa mem -k 21 -L 3 $1 $2.fastq | samtools sort -o $3.bam && samtools index $4.bam'" % [reference, prefix, prefix, prefix])
@@ -93,32 +95,15 @@ proc assembler(path: string, prefix: string, min_reads:int=5, min_ctg_length:int
 
       # too far, so start a new region
       if (r.start - last_stop) > 50:
-        while q.len > 0:
-          var cs = q.pop()
-          # try to make the contigs a bit larger, here on the right side
-          if cs.start > last_stop: break
-          discard ctgs.insert(cs.sequence)
         fq.dump_contigs(ctgs, target, last_start, last_stop, min_reads=min_reads, min_ctg_length=min_ctg_length)
 
         # make a new set of contigs
-        ctgs = new_seq[Contig]()
-        if is_informative:
-          last_start = r.start
-          # extend the contig on the left size
-          while q.len > 0:
-            var cs = q.pop()
-            if cs.stop < r.start:
-              continue
-            discard ctgs.insert(cs.sequence)
+        ctgs.set_len(0)
 
       if is_informative:
+        last_start = r.start
         discard ctgs.insert(tmp)
         last_stop = max(last_stop, r.stop)
-
-      else: # even perfect reads can be used to extend contigs.
-
-        while q.len > 30: discard q.pop
-        q.add((r.start, r.stop, tmp))
 
     fq.dump_contigs(ctgs, target, last_start, last_stop, min_reads=min_reads, min_ctg_length=min_ctg_length)
 

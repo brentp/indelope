@@ -28,13 +28,14 @@ proc new_config*(k:int=7, mode:EdlibAlignMode=EDLIB_MODE_HW, task:EdlibAlignTask
 proc destroy_alignment(a: Alignment) =
   edlibFreeAlignResult(a.c)
 
-proc cigar*(a:Alignment, extended:bool=false): string =
+proc cigar*(a:Alignment, s:var string, extended:bool=false): string =
   ## a string representation of the CIGAR
   var x = EDLIB_CIGAR_STANDARD
   if extended:
     x = EDLIB_CIGAR_EXTENDED
   var v = edlibAlignmentToCigar(a.c.alignment, a.c.alignmentLength, x)
-  result = $v
+  s = $v
+  result = s
   free(v)
 
 proc edit_distance*(a: Alignment): int {.inline.} =
@@ -123,17 +124,18 @@ when isMainModule:
   var q = "AACTGT   CATGCGAGTGaG".replace(" ", "")
 
   var aln = q.align_to(t, cfg)
-  assert aln.cigar() == "7M3D11M"
-  assert aln.cigar(extended=true) == "1X6=3D11="
+  var cigar_s = ""
+  assert aln.cigar(cigar_s) == "7M3D11M"
+  assert aln.cigar(cigar_s, extended=true) == "1X6=3D11="
   assert aln.score == 12 # 17 matches - 1MM = 16 - 1gap_o == 14 - 2 gap_e == 12
 
   t = "CCCCCCCCCCCAACTGTCCCCATGCGAGTGAGCCCCCCCCC"
   q = "AACTGTCATGCGAGTGAG"
 
   aln = q.align_to(t, cfg)
-  assert aln.cigar == "7M3D11M", aln.cigar
+  assert aln.cigar(cigar_s) == "7M3D11M", cigar_s
   assert aln.start == 11
-  echo aln.cigar(extended=true)
+  echo aln.cigar(cigar_s, extended=true)
 
   t = "AACTGTCCCCATGCGAGTGAG"
   q = "GACTGTCTTTTAGCTAGTGAG"

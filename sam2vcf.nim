@@ -13,6 +13,7 @@ type
     start*: int
     stop*:int
     nreads*: int
+    nof*:string
 
   Variant* = ref object of RootObj
     chrom*: string
@@ -21,6 +22,7 @@ type
     reference*: string
     alternate*: string
     quality*: uint8
+    INFO: string
     AD*: array[2, int]
     GT*: string
     GQ*: int
@@ -31,8 +33,9 @@ proc info(r: Record): Info =
   var region = rnrl[0]
   var cse = region.split(":", 1)
   var se = cse[1].split("-", 1)
-  var nr = rnrl[1].split("=")[1]
-  return Info(chrom: cse[0], start: parseInt(se[0]) - 1, stop: parseInt(se[1]), nreads: parseInt(nr))
+  var nof = rnrl[1]
+  var nr = rnrl[2].split("=")[1]
+  return Info(chrom: cse[0], start: parseInt(se[0]) - 1, stop: parseInt(se[1]), nreads: parseInt(nr), nof:nof)
 
 proc `$`*(i: Info): string =
   return "Info(" & i.chrom & ":" & $(i.start + 1) & "-" & $(i.stop) & " nreads:" & $i.nreads & ")"
@@ -117,6 +120,7 @@ proc createVariant(vstart:int, vstop:int, r:Record, bqs: seq[uint8], loc:Info, o
   v.quality = uint8(r.qual)
   v.AD[0] = 0 # TODO:
   v.AD[1] = loc.nreads
+  v.INFO = "nof=" & $loc.nof & ";"
   return v
 
 iterator as_variant*(r: Record, loc: Info, bqs: seq[uint8], fa: Fai): Variant =
@@ -147,6 +151,7 @@ var header = """##fileformat=VCFv4.2
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
 ##FORMAT=<ID=PL,Number=G,Type=Integer,Description="Normalized, Phred-scaled likelihoods for genotypes as defined in the VCF specification">
 ##INFO=<ID=DP,Number=1,Type=Integer,Description="Approximate read depth; some reads may have been filtered">
+##INFO=<ID=n_of,Number=1,Type=String,Description="indicates how many contigs were created for this region and which was ##the alternate">
 $1
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO"""
 #
@@ -180,6 +185,7 @@ when isMainModule:
         v.alternate, "\t",
         $(v.quality), "\t",
         "PASS\t",
+        v.INFO,
         "END=" & $(v.stop),
         ";SVLEN=" & $(v.stop - v.start),
         ";AD=" & $v.AD[0] & "," & $v.AD[1])

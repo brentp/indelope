@@ -292,7 +292,7 @@ proc make_contig(dna: string): Contig =
   o.mismatch_count = new_seq[uint32](dna.len)
   return o
 
-proc insert*(c: Contig, dna: string, min_overlap:int=40, max_mismatch:int=1, p_overlap:float64=0.75): bool {.inline.} =
+proc insert*(c: Contig, dna: string, min_overlap:int=48, max_mismatch:int=0, p_overlap:float64=0.75): bool {.inline.} =
   ## add a sequence to a contig.
   ## return value indicates that it was added to an existing contig
   var o = make_contig(dna)
