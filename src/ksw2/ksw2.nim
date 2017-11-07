@@ -2,7 +2,12 @@ import ksw2_c
 
 type 
   Ez* = ref object of RootObj
-    c: ptr ksw_extz_t
+    c: ksw_extz_t
+    mat: seq[int8]
+    gap_open: int8
+    gap_ext: int8
+    q: seq[uint8]
+    t: seq[uint8]
 
   CArray{.unchecked.}[T] = array[0..0, T]
   cigar_pair* = tuple[op:uint32, length: uint32]
@@ -24,6 +29,7 @@ iterator cigar*(e:Ez): cigar_pair =
     if result.op != 2:
       off += result.length
     yield result
+
 
 proc str*(p:cigar_pair): char {.inline.} =
   "MID"[p.op.int]
@@ -78,28 +84,43 @@ proc draw*(e:Ez, q:string, t:string): string =
 
 const lookup = [4'u8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 4, 1, 4, 4, 4, 2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 4, 1, 4, 4, 4, 2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4]
 
-proc encode(dna:string, enc: var seq[uint8]) =
+proc encode*(dna:string, enc: var seq[uint8]) =
   enc.set_len(dna.len)
   for i, l in dna:
     enc[i] = lookup[l.int]
 
 
 proc matrix*(match:int8=1, mismatch:int8=(-2)): seq[int8] =
-  result = @[match,    mismatch, mismatch, mismatch, 0,
-             mismatch, match,    mismatch, mismatch, 0,
-             mismatch, mismatch, match,    mismatch, 0,
-             mismatch, mismatch, mismatch,    match, 0,
-             0,        0,        0,           0,     0]
+  return @[match,    mismatch, mismatch, mismatch, 0,
+           mismatch, match,    mismatch, mismatch, 0,
+           mismatch, mismatch, match,    mismatch, 0,
+           mismatch, mismatch, mismatch,    match, 0,
+           0,        0,        0,           0,     0]
 
-proc align_to*(query: var seq[uint8], target: var seq[uint8], matrix: var seq[int8], ez:Ez, gap_open:int8=(3), gap_ext:int8=(1), flag:cint=KSW_EZ_RIGHT) =
-  #ez.reset()
+proc new_ez*(match:int8=1, mismatch:int8=(-2), gap_open:int8=3, gap_ext:int8=1): Ez =
+  var cez = ksw_extz_t()
+  var mm = mismatch
+  if mm > 0: mm = -mm
+  return Ez(c: cez, mat: matrix(match, mismatch),
+            gap_open: abs(gap_open), gap_ext:abs(gap_ext),
+            q:new_seq[uint8](1000),
+            t:new_seq[uint8](1000))
+
+proc align_to*(query: var seq[uint8], target: var seq[uint8], ez:Ez, flag:cint=KSW_EZ_RIGHT) {.inline.} =
+  ## align an encoded query to an encoded target.
   var bw = -1 # TODO
   var z = -1
-  assert gap_open > 0 and gap_ext > 0
   ksw_extz2_sse(nil.pointer, query.len.cint, cast[ptr uint8](query[0].addr),
                 target.len.cint, cast[ptr uint8](target[0].addr),
-                5.int8, cast[ptr int8](matrix[0].addr),
-                gap_open, gap_ext, bw.cint, z.cint, flag, ez.c)
+                5.int8, cast[ptr int8](ez.mat[0].addr),
+                ez.gap_open, ez.gap_ext, bw.cint, z.cint, flag, ez.c.addr)
+
+proc align_to*(query: string, target: string, ez:Ez, flag:cint=KSW_EZ_RIGHT) {.inline.} =
+  ## align a query to a target with the parameters in ez
+  ## the encoding is (re)done internally and re-uses memory to avoid allocations.
+  query.encode(ez.q)
+  target.encode(ez.t)
+  ez.q.align_to(ez.t, ez, flag)
 
 when isMainModule:
 
@@ -112,10 +133,10 @@ when isMainModule:
   var tqry = new_seq[uint8](qry.len)
   tgt.encode(tenc)
   qry.encode(tqry)
-  var mat = matrix()
-  var cez = ksw_extz_t()
-  var ez = Ez(c: cez.addr)
-  tqry.align_to(tenc, mat, ez)
+
+  var ez = new_ez()
+
+  tqry.align_to(tenc, ez)
 
   var cig = toSeq(ez.cigar)
 
@@ -127,8 +148,7 @@ when isMainModule:
       check tqry.len == qry.len
 
     test "matrix":
-      check mat == @[1'i8, -2, -2, -2, 0, -2, 1, -2, -2, 0, -2, -2, 1, -2, 0, -2, -2, -2, 1, 0, 0, 0, 0, 0, 0] 
-
+      check ez.mat == @[1'i8, -2, -2, -2, 0, -2, 1, -2, -2, 0, -2, -2, 1, -2, 0, -2, -2, -2, 1, 0, 0, 0, 0, 0, 0]
 
     test "cigar":
       check cig[0].str == 'M'
@@ -152,6 +172,10 @@ when isMainModule:
     test "event":
       check ez.max_event_length == 19
 
+    test "str align":
+      qry.align_to(tgt, ez)
+      check ez.q.len == qry.len
+
   for cig in ez.full_cigar:
     echo cig, cig.str
   echo "base cigar"
@@ -163,4 +187,3 @@ when isMainModule:
   echo "target end:", ez.tstop
 
   echo ez.draw(qry, tgt)
-
