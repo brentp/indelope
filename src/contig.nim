@@ -10,7 +10,7 @@ type
     ## number of reads covering each base in the contig.
     support*: seq[uint32]
     nreads*: int
-    start: int
+    start*: int
 
   correction_site = tuple[qoff:int, toff:int, qbest:bool]
   ## a Match is a putative match. corrections are sites that were mismatched, but that had low
@@ -139,7 +139,10 @@ proc insert*(m:Match, q:Contig) =
     else:
       q.sequence[correction.qoff] = t.sequence[correction.toff]
       q.support[correction.qoff] = t.support[correction.toff]
-    dont_overwrite.incl(correction.qoff)
+    if m.offset < 0:
+      dont_overwrite.incl(correction.qoff)
+    else:
+      dont_overwrite.incl(correction.toff)
 
   # in this case, we need to allocate a new string
   # offset -n
@@ -171,7 +174,23 @@ proc insert*(m:Match, q:Contig) =
     m.contig.support = tsup
     m.contig.nreads += q.nreads
     m.contig.start = q.start
+    return
 
+  # off-set  
+  #          qqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+  # tttttttttttttttttttttttttttttttt
+  var original_len = t.len
+  if m.offset + q.len > t.len:
+    t.sequence.set_len(m.offset + q.len)
+    t.support.set_len(m.offset + q.len)
+
+  for i in m.offset..<t.len:
+    var qoff = i - m.offset
+    if i in dont_overwrite: continue
+    t.support[i] += q.support[qoff]
+    if i >= original_len:
+      t.sequence[i] = q.sequence[qoff]
+  m.contig.nreads += q.nreads
 
 proc insert*(contigs: var seq[Contig], q:Contig, min_overlap:int=50, max_mismatch:int=0) =
   var matches = new_seq_of_cap[Match](contigs.len)
@@ -188,6 +207,10 @@ proc insert*(contigs: var seq[Contig], q:Contig, min_overlap:int=50, max_mismatc
 
   matches.sort(match_sort)
   matches[0].insert(q)
+
+proc insert*(contigs: var seq[Contig], q:string, start:int, min_overlap:int=50, max_mismatch:int=0) =
+  var qc = make_contig(q, start)
+  contigs.insert(qc, min_overlap=min_overlap, max_mismatch=max_mismatch)
 
 when isMainModule:
   import unittest
@@ -260,7 +283,7 @@ when isMainModule:
     test "insertion left overhang":
 
       var t = make_contig(    "ATTAACTGGGTACGGTTTGGGG", 3, 7)
-      var q = make_contig("GGAGATTAACTGGGXACGGTTTGG", 0, 2)
+      var q = make_contig("GGAGATTAACTGGGXACGGTTTGG", 1, 2)
 
       var ma = q.slide_align(t, min_overlap=5)
       check ma.aligned
@@ -268,15 +291,16 @@ when isMainModule:
       check t.sequence == "GGAGATTAACTGGGTACGGTTTGGGG"
       check 26 == t.sequence.len
       check 26 == t.support.len
-      check t.start == 0
+      check t.start == 1
       #                     G      G  A  G  A  T  T  A  A  C  T  G  G  G  T  A  C  G  G  T  T  T  G  G  G  G
       check t.support ==  @[2'u32, 2, 2, 2, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 7]
        
-      t = make_contig(    "ATTAACTGGGTACGGTTTGGGG", 3, 2)
+      t = make_contig(    "ATTAACTGGGTACGGTTTGGGG", 5, 2)
       q = make_contig("GGAGATTAACTGGGXACGGTTTGG", 0, 7)
       ma = q.slide_align(t, min_overlap=5)
 
       ma.insert(q)
+      check t.start == 0
       check ma.aligned
       check t.sequence == "GGAGATTAACTGGGXACGGTTTGGGG"
       check t.support ==  @[7'u32, 7, 7, 7, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 9, 9, 9, 9, 9, 9, 9, 9, 9, 2, 2]
@@ -290,4 +314,37 @@ when isMainModule:
       check t.sequence == "GGAGATTAACTGGGTACGGTTTGG"
       check @[2'u32, 2, 2, 2, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 9, 9, 2, 2, 2, 2, 2, 2, 2] == t.support
       check t.start == 0
+
+    test "insertion right overhang":
+      var t = make_contig("GGAGATTAACTGGGXACGGTTTGG", 1, 2)
+      var q = make_contig(    "ATTAACTGGGTACGGTTTGGGG", 3, 7)
+      var ma = q.slide_align(t, min_overlap=5)
+      check ma.aligned
+      ma.insert(q)
+      check t.start == 1
+      #                    G      G  A  G  A  T  T  A  A  C  T  G  G  G  T  A  C  G  G  T  T  T  G  G  G  G
+      check t.support == @[2'u32, 2, 2, 2, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 7]
+      check t.sequence == "GGAGATTAACTGGGTACGGTTTGGGG"
+
+      t = make_contig("GGAGATTAACTGGGXACGGTTTGG", 90, 7)
+      q = make_contig("GGAGATTAACTGGGTACGGTTTGGGG", 90, 2)
+      check t.sequence.len == 24
+      ma = q.slide_align(t, min_overlap=5)
+      check ma.offset == 0
+      check ma.aligned
+      ma.insert(q)
+      check t.start == 90
+      check t.sequence.len == 26
+      check t.sequence == "GGAGATTAACTGGGXACGGTTTGGGG"
+
+      t = make_contig(   "GGAGATTAACTGGGXACGGTTTGG", 0, 2)
+      q = make_contig("AAAGGAGATTAACTGGGTACGGTTTGGGG", 3, 7)
+      ma = q.slide_align(t, min_overlap=5)
+      check ma.offset == -3
+      ma.insert(q)
+      check t.sequence.len == q.sequence.len
+      check t.sequence == "AAAGGAGATTAACTGGGTACGGTTTGGGG"
+      check t.start == 3
+
+      check t.support == @[7'u32, 7, 7, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 7]
 
