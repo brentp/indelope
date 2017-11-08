@@ -1,6 +1,7 @@
 #include "edlib.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <cstdlib>
 #include <algorithm>
 #include <vector>
@@ -255,7 +256,6 @@ extern "C" EdlibAlignResult edlibAlign(const char* const queryOriginal, const in
     free(target);
     if (alignData) delete alignData;
     //-------------------//
-
     return result;
 }
 

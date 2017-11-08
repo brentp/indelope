@@ -30,9 +30,15 @@ iterator cigar*(e:Ez): cigar_pair =
       off += result.length
     yield result
 
-
 proc str*(p:cigar_pair): char {.inline.} =
   "MID"[p.op.int]
+
+proc cigar_string*(e: Ez, s:var string): string =
+  s.set_len(0)
+  for c in e.cigar:
+    s.add($c.length & c.str)
+  return s
+
 
 proc qstop(e: Ez): int {.inline.} =
   ## 1-based stop of the query alignment
@@ -42,7 +48,7 @@ proc tstop(e: Ez): int {.inline.} =
   ## 1-based stop of the target alignment
   return e.c.max_t + 1
 
-proc max_event_length(e: Ez): uint32 {.inline.} =
+proc max_event_length*(e: Ez): uint32 {.inline.} =
   result = 0
   for c in e.cigar:
     if c.op != 0:
@@ -187,3 +193,12 @@ when isMainModule:
   echo "target end:", ez.tstop
 
   echo ez.draw(qry, tgt)
+
+  tgt = "TGGCGCCTTGGCCTACAGGGGCCGCGGTTGAGGGTGGGAGTGGGGGTGCACTGGCCAGCACCTCAGGAGCTGGGGGTGGTGGTGGGGGCGGTGGGGGTGGTGTTAGTACCCCATCTTTTAGGTCTGA"
+  qry = "CCTCAGGAGCTGGGGGTGGTGGTGGGGGCGGTGGGGGTGGTGTTAGTACCCCATCTTGTAGGTCTGAAACACAAAGTGTGGGGTG"
+
+  qry.align_to(tgt, ez)
+  echo ez.draw(qry, tgt)
+
+  for op in ez.cigar:
+    echo op, op.str

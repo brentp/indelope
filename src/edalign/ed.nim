@@ -7,10 +7,10 @@ proc free(v: pointer) {.header: "<stdlib.h>", importc: "free".}
 type
   Alignment* = ref object of RootObj
     ## Alignment wraps the result of align
-    c: EdlibAlignResult
+    c*: EdlibAlignResult
   Config* = ref object of RootObj
     ## config determins the alignment parameters
-    c: EdlibAlignConfig
+    c*: EdlibAlignConfig
 
 proc k*(c: Config): int =
   # return k window of the alignment config
@@ -50,9 +50,8 @@ proc start*(a: Alignment): int =
   ## the first start of the alignment; negative for invalid alignment
   if a.c.startLocations == nil:
     return -1
-  var s: int
-  copyMem(s.addr.pointer, a.c.startLocations.pointer, sizeof(s))
-  return s
+  var arr = cast[ptr CArray[int]](a.c.startLocations.pointer)
+  return arr[0]
 
 proc length*(a: Alignment): int =
   return a.c.alignmentLength
@@ -65,12 +64,14 @@ proc alignTo*(query: string, target: string, config: Config): Alignment =
   a.c = edlibAlign(query.toUpperAscii.cstring, query.len.cint, target.toUpperAscii.cstring, target.len.cint, config.c)
   return a
 
-const lookupt = ['-', '-', ' ', '*']
+const lookupt = ['-', '-', ' ', '-']
 const lookupq = ['-', ' ', '-', '*']
 
 
 proc score*(a:Alignment, match:int=1, mismatch:int=(-1), gap_open:int=(-2), gap_extend:int=(-1)): int =
   ## score an alignment. match should be positive and others should be negative.
+  if a.c.alignment == nil:
+    return -1
   var 
     arr = cast[ptr CArray[uint8]](a.c.alignment.pointer)
     ingap = false
@@ -115,7 +116,7 @@ proc repr*(a:Alignment): array[2, string] =
 
 proc `$`*(a:Alignment): string =
   var s = a.repr
-  return "target:" & s[0] & "\nquery :" & s[1]
+  return s[0] & " target\n" & s[1] & " query"
 
 when isMainModule:
 
@@ -141,5 +142,14 @@ when isMainModule:
   q = "GACTGTCTTTTAGCTAGTGAG"
   cfg = new_config(k=3)
   aln = q.align_to(t, cfg)
-  assert (not aln.ok)
+  assert (not(aln.ok))
   assert aln.start == -1
+
+  var c = new_config(k=20)
+  var tgt = "CCCCCTGCTCATCGAGACCTACGTGGGACTCATGTCCTTCATTAACAACGAGGCGAAACTGGGCTACTCCATGACCAGGGGCAAAATAGGCTTTTAGCCGCTGCGTTCTGGGAGCTCCTCCCCCTTCTGGGAGCTCCTCCCCCTCCCCAGAAGGCCAAGGGATGTGGGGGCTGGGGGACTGGGAGGCCTGGCAGTCTT"
+  var qry =                                                      "CGAAACTGGGCTACTCCATGACCAGGGGCAAAATAGGCTTTTAGCCGCTGCGTTCTGGGAGCTCCTCCCCCTCCCCAGAAGGCCAAGGGATGTTGGGG"
+
+  var a = qry.align_to(tgt, c)
+  echo a.cigar(cigar_s)
+  echo $a
+
