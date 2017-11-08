@@ -160,7 +160,8 @@ proc insert*(m:Match, q:Contig) =
     if q.len > tseq.len: # note this is comparing to the new tseq
       var d = q.len - tseq.len
       tseq.add(q.sequence[q.len-d..<q.len])
-      tsup.add(q.support[q.len-d..<q.len])
+      # this gets set below so we just set to 0 here.
+      tsup.set_len(tseq.len)
 
     # increment the support in tsup
     for i in abs(m.offset)..<q.len:
@@ -267,6 +268,7 @@ when isMainModule:
       check t.sequence == "GGAGATTAACTGGGTACGGTTTGGGG"
       check 26 == t.sequence.len
       check 26 == t.support.len
+      check t.start == 0
       #                     G      G  A  G  A  T  T  A  A  C  T  G  G  G  T  A  C  G  G  T  T  T  G  G  G  G
       check t.support ==  @[2'u32, 2, 2, 2, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 7]
        
@@ -279,4 +281,13 @@ when isMainModule:
       check t.sequence == "GGAGATTAACTGGGXACGGTTTGGGG"
       check t.support ==  @[7'u32, 7, 7, 7, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 9, 9, 9, 9, 9, 9, 9, 9, 9, 2, 2]
       #q = make_contig("GGAGATTAACTGGGXACGGTTTGG", 0, 12)
+
+      t = make_contig(    "ATTAACTGGGTAC", 3, 7)
+      q = make_contig("GGAGATTAACTGGGXACGGTTTGG", 0, 2)
+      ma = q.slide_align(t, min_overlap=5)
+      check ma.aligned
+      ma.insert(q)
+      check t.sequence == "GGAGATTAACTGGGTACGGTTTGG"
+      check @[2'u32, 2, 2, 2, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 9, 9, 2, 2, 2, 2, 2, 2, 2] == t.support
+      check t.start == 0
 
