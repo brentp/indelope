@@ -14,8 +14,6 @@ type
     base_count*: seq[uint32]
     mismatch_count*: seq[uint32]
     nreads*: int
-    # TODO: remove this. just for debugging
-    reads: seq[string]
 
   Match* = ref object of RootObj
     matches: int
@@ -124,8 +122,6 @@ proc count_matches*(c: Contig, dna: var Contig, min_overlap:int=40, max_mismatch
     c.nreads = dna.nreads
     c.base_count = dna.base_count
     c.mismatch_count = dna.mismatch_count
-    when defined(reads):
-      c.reads = dna.reads
     return Match(matches: dna.len, added: true)
 
   var min_mm = max_mismatch + 1
@@ -253,9 +249,20 @@ proc insert*(c: Contig, dna: var Contig, match:Match=nil, min_overlap:int=40, ma
   # ERROR correction
   # now track the mismatches so we can do a crude error correction by voting.
   var found = false
+  var rseq = c.sequence
+  if matches.offset < 0:
+    rseq = rseq[-matches.offset..rseq.high]
+
   for i, s in matches.sub:
-      if i + max(0, matches.offset) == c.sequence.len: break
-      if s != c.sequence[i + max(0, matches.offset)]:
+      if i == rseq.len: break
+      if s != rseq[i]:
+        echo max_mismatch
+        echo matches.sub
+        echo rseq
+        #echo c.sequence[max(0, matches.offset)..c.sequence.high]
+        echo matches.offset
+        echo matches.mm
+        quit()
         c.mismatch_count[i + max(0, matches.offset)] += 1
         found = true
   if found:
@@ -271,12 +278,6 @@ proc insert*(c: Contig, dna: var Contig, match:Match=nil, min_overlap:int=40, ma
 
   # end ERROR correction
   c.nreads += dna.nreads
-  when defined(reads):
-    if dna.reads != nil and c.reads == nil:
-      c.reads = dna.reads
-    else:
-      for r in dna.reads:
-        c.reads.add(r)
 
   if DEBUG:
     echo "AFTER"

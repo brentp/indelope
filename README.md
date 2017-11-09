@@ -17,7 +17,8 @@
 
 
 ## TODO:
-X. make Contig track start  inserted sequence so that we know what to align to
-0. add parameter to assemble.count_mismatches that allows a "mismatch" if the counts in that contig are less than a parameter.
+0. set contig default to not insert if corrections is not empty. then in contigs.merge
+   that can be used.
+
 1. first merge reads looking at variant quality.
 2. merge and vote but keep separate anything where support for either is >= 5

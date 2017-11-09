@@ -1,5 +1,5 @@
 import osproc
-import assemble
+import contig
 import binaryheap
 import sequtils
 import os
@@ -41,24 +41,73 @@ proc skippable(r: Record): bool {.inline.} =
   return false
 
 
-proc assemble(r: roi, fai: Fai, ez: Ez) =
+proc assemble(r: roi, fai: Fai, ez: Ez, bp_overlap:int=4) =
   var contigs = new_seq[Contig]()
   var sequence = ""
+  var read_seq = ""
+  var ss = ""
   # assemble the alt contig
   for read in r.reads:
     if read.skippable: continue
-    discard contigs.insert(read.sequence(sequence))
-  contigs = contigs.combine(p_overlap=0.5)
+    contigs.insert(read.sequence(sequence), read.start)
   var k = 0
-  echo r.start, "..", r.stop
-  var reference = fai.get(r.reads[0].chrom, r.start - 60, r.stop + 60)
+  var before = len(contigs)
+  contigs = filter(contigs.combine(), proc(x: Contig): bool = x.nreads >= 4 and x.len > 75)
+  if len(contigs) == 0: return
+
+  echo "#########################################################"
+  echo r.reads[0].chrom, ":", r.start, "-", r.stop, " n contigs:", len(contigs), " was:", before
+  
   for ctg in contigs:
-    if ctg.nreads >= 4 and ctg.len > 75:
-      k += 1
-      ctg.sequence.align_to(reference, ez)
-      if ez.max_event_length < 3: continue
-      echo ez.cigar_string(sequence)
-      echo ez.draw(ctg.sequence, reference)
+    var max_stop = ctg.start
+    for read in r.reads:
+      max_stop = max(max_stop, read.stop)
+
+    var reference = fai.get(r.reads[0].chrom, ctg.start, max_stop)
+    ctg.sequence.align_to(reference, ez)
+
+    if ez.max_event_length < 3: continue
+    var locs = toSeq(ez.event_locations(ctg.start))
+    if locs.len > 4: continue
+
+    echo "\n\n", ez.cigar_string(sequence),  " nreads:", ctg.nreads, " len c reads:", len(r.reads)
+    echo "locs:", locs
+    echo ez.draw(ctg.sequence, reference)
+    echo ctg.support
+
+    var ref_support = 0
+    var alt_support = 0
+
+    for read in r.reads:
+      if read.stop < (locs[locs.high].stop + bp_overlap): continue
+      if read.start > (locs[locs.high].start - bp_overlap): continue
+
+      var offset = max(0, read.start - ctg.start)
+      read.sequence(read_seq).align_to(ctg.sequence[offset..<ctg.len], ez)
+      echo "\nread:", read.start, "..", read.stop
+      echo "contig score:",  ez.score, " cigar:", ez.cigar_string(ss), " full cigar:", ez.cigar_string(ss, full=true)
+      var cevents = toSeq(ez.event_locations(ctg.start + offset))
+      echo "events:", cevents
+      echo ez.draw(read_seq, ctg.sequence[offset..<ctg.len])
+      var ctg_score = ez.score
+
+      read_seq.align_to(reference[offset..<reference.len], ez)
+      echo "ref score::", ez.score, " ", "cigar:", ez.cigar_string(ss), " full cigar:", ez.cigar_string(ss, full=true)
+      echo "events:", toSeq(ez.event_locations(ctg.start + offset))
+      echo ez.draw(read_seq, reference[offset..<reference.len])
+      var ref_score = ez.score
+      if ctg_score >= 50 and ctg_score > 3 + ref_score:
+        alt_support += 1
+      elif ref_score >= 50 and ref_score > 3 + ctg_score:
+        ref_support += 1
+      elif ref_score >= 50 and len(cevents) == 0:
+        ref_support += 1
+       
+      
+    echo ref_support, " ", alt_support
+    quit()
+
+
 
 iterator event_locations(r: Record): event {.inline.} =
   ## the genomic start-end of the location of the event

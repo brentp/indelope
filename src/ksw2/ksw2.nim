@@ -30,15 +30,21 @@ iterator cigar*(e:Ez): cigar_pair =
       off += result.length
     yield result
 
+proc n_cigar*(e:Ez): int {.inline.} =
+  return e.c.n_cigar.int
+
 proc str*(p:cigar_pair): char {.inline.} =
   "MID"[p.op.int]
 
-proc cigar_string*(e: Ez, s:var string): string =
+proc cigar_string*(e: Ez, s:var string, full:bool=false): string =
   s.set_len(0)
-  for c in e.cigar:
-    s.add($c.length & c.str)
+  if full:
+    for c in e.full_cigar:
+      s.add($c.length & c.str)
+  else:
+    for c in e.cigar:
+      s.add($c.length & c.str)
   return s
-
 
 proc qstop(e: Ez): int {.inline.} =
   ## 1-based stop of the query alignment
@@ -53,6 +59,19 @@ proc max_event_length*(e: Ez): uint32 {.inline.} =
   for c in e.cigar:
     if c.op != 0:
       result = max(result, c.length)
+
+type event* = tuple[start: int, stop: int, len: uint32]
+
+iterator event_locations*(e: Ez, start:int): event {.inline.} =
+  ## the genomic start-end of the location of the event
+  var off = start
+  for c in e.cigar:
+    if c.op == 1: #I
+      yield (off, off + 1, c.length)
+    elif c.op == 2: # D
+      yield (off, off + c.length.int, c.length)
+    if c.op != 1: # M or D
+      off += c.length.int
 
 proc score*(e:Ez): int {.inline.} =
   ## report the max score at the end of the query
@@ -112,7 +131,7 @@ proc new_ez*(match:int8=1, mismatch:int8=(-2), gap_open:int8=3, gap_ext:int8=1):
             q:new_seq[uint8](1000),
             t:new_seq[uint8](1000))
 
-proc align_to*(query: var seq[uint8], target: var seq[uint8], ez:Ez, flag:cint=KSW_EZ_RIGHT) {.inline.} =
+proc align_to*(query: var seq[uint8], target: var seq[uint8], ez:Ez, flag:cint=KSW_EZ_EXTZ_ONLY or KSW_EZ_RIGHT) {.inline.} =
   ## align an encoded query to an encoded target.
   var bw = -1 # TODO
   var z = -1
@@ -121,7 +140,7 @@ proc align_to*(query: var seq[uint8], target: var seq[uint8], ez:Ez, flag:cint=K
                 5.int8, cast[ptr int8](ez.mat[0].addr),
                 ez.gap_open, ez.gap_ext, bw.cint, z.cint, flag, ez.c.addr)
 
-proc align_to*(query: string, target: string, ez:Ez, flag:cint=KSW_EZ_RIGHT) {.inline.} =
+proc align_to*(query: string, target: string, ez:Ez, flag:cint=KSW_EZ_EXTZ_ONLY or KSW_EZ_RIGHT) {.inline.} =
   ## align a query to a target with the parameters in ez
   ## the encoding is (re)done internally and re-uses memory to avoid allocations.
   query.encode(ez.q)
@@ -202,3 +221,7 @@ when isMainModule:
 
   for op in ez.cigar:
     echo op, op.str
+
+  tgt = "AGGATGACGGCTGTGCTGGTGGGTCACGGGCGGCTCTGGGTCACAGGTACGGAGGATGACGGCTGTGCTGGTGGGTCACGGGCGGCTCTGGGTCACAGGTACGGAGGATGACGGCTGTGCTGGTGGCCGTGGGGCTGG"
+  qry = "AGGATGACGGCTGTGCTGGTGGGTCACGGGCGGCTCTGGGTCACAGGTACGGAGGATGACGGCTGTGCTGGTGGGTCACGGGCGGCTCTGGGTCACAGGTACGGAGGATGACGGCTGTGCTGGGGG"
+

@@ -18,6 +18,10 @@ type
   ## `contig` tracks the contig this match was for.
   Match = tuple[matches: int, offset: int, mismatches: int, corrections:seq[correction_site], contig:Contig]
 
+  ## a function that determines if a mismatch is "allowed" and not counted as a mismatch
+  ## if this function returns true, the puported mismatch is corrected by a voting scheme.
+  allowable_mismatch_fn =  proc(qsup:uint32, tsup:uint32, qreads:int, treads:int): bool
+
 const unaligned* = low(int)
 
 proc aligned*(ma: Match): bool {.inline.} =
@@ -35,12 +39,12 @@ proc len*(c:Contig): int {.inline.} =
 proc `[]`*(c:Contig, i:int): char {.inline.} =
   return c.sequence[i]
 
-proc allowable_mismatch(qsup: uint32, tsup: uint32): bool {.inline.} =
+proc allowable_mismatch(qsup: uint32, tsup: uint32, qreads:int, treads:int): bool =
   ## default implementation to determine if we can overwrite a mismatch
-  return ((qsup < 3'u32 and tsup > 3'u32 * qsup) or 
-         (tsup < 3'u32 and qsup > 3'u32 * tsup))
+  return ((qsup < 3'u32 and tsup > 3'u32 * qsup and qreads > 3 * int(qsup)) or 
+         (tsup < 3'u32 and qsup > 3'u32 * tsup and treads > 3 * int(tsup)))
 
-proc slide_align*(q: Contig, t:Contig, min_overlap:int=50, max_mismatch:int=0): Match =
+proc slide_align*(q: Contig, t:Contig, min_overlap:int=50, max_mismatch:int=0, allowed:allowable_mismatch_fn=allowable_mismatch): Match =
   ## align (q)uery to (t)arget requiring a number of bases of overlap and fewer
   ## than the specified mismatches. If unaligned, the constant unaligned is returned.
   ## a negative value indicates that the query extends the target to the left.
@@ -63,9 +67,9 @@ proc slide_align*(q: Contig, t:Contig, min_overlap:int=50, max_mismatch:int=0): 
     var ma = 0
     while qo < len(q) and to < len(t):
       if q[qo] != t[to]:
-        if not allowable_mismatch(q.support[qo], t.support[to]):
+        if not allowed(q.support[qo], t.support[to], q.nreads, t.nreads):
           mm += 1
-          if mm == max_mismatch:
+          if mm > max_mismatch:
             break
         else:
           correction.add((qo, to, q.support[qo] > t.support[to]))
@@ -92,9 +96,9 @@ proc slide_align*(q: Contig, t:Contig, min_overlap:int=50, max_mismatch:int=0): 
 
     while qo < len(q) and to < len(t):
       if q[qo] != t[to]:
-        if not allowable_mismatch(q.support[qo], t.support[to]):
+        if not allowed(q.support[qo], t.support[to], q.nreads, t.nreads):
           mm += 1
-          if mm == max_mismatch:
+          if mm > max_mismatch:
             break
         else:
           correction.add((qo, to, q.support[qo] > t.support[to]))
@@ -121,8 +125,8 @@ proc make_contig(dna: string, start:int, support:uint32=1): Contig =
   var o = Contig(sequence: dna, support:bc, nreads: int(support), start:start)
   return o
 
-proc slide_align(q: string, t:string, qstart:int=0, tstart:int=0, min_overlap:int=50, max_mismatch:int=0): Match =
-  return slide_align(make_contig(q, qstart), make_contig(t, qstart), min_overlap, max_mismatch)
+proc slide_align(q: string, t:string, qstart:int=0, tstart:int=0, min_overlap:int=50, max_mismatch:int=0, allowed:allowable_mismatch_fn=allowable_mismatch): Match =
+  return slide_align(make_contig(q, qstart), make_contig(t, qstart), min_overlap, max_mismatch, allowed=allowed)
 
 proc insert*(m:Match, q:Contig) =
   ## insert a contig and perform error correction for sites that
@@ -192,9 +196,10 @@ proc insert*(m:Match, q:Contig) =
       t.sequence[i] = q.sequence[qoff]
   m.contig.nreads += q.nreads
 
-proc insert*(contigs: var seq[Contig], q:Contig, min_overlap:int=50, max_mismatch:int=0) =
+proc best_match(contigs: var seq[Contig], q:Contig, min_overlap:int=50, max_mismatch:int=0): Match =
   var matches = new_seq_of_cap[Match](contigs.len)
   for c in contigs:
+    if c == q: continue
     # q always first to slide_align
     var ma = slide_align(q, c, min_overlap=min_overlap, max_mismatch=max_mismatch)
     if ma.aligned:
@@ -202,18 +207,54 @@ proc insert*(contigs: var seq[Contig], q:Contig, min_overlap:int=50, max_mismatc
       matches.add(ma)
   # didn't find a good match so add it.
   if len(matches) == 0:
-    contigs.add(q)
-    return
+    var ma:Match
+    ma.offset = unaligned
+    return ma
 
   matches.sort(match_sort)
-  matches[0].insert(q)
+  return matches[0]
+
+
+proc insert*(contigs: var seq[Contig], q:Contig, min_overlap:int=50, max_mismatch:int=0) =
+  var ma = contigs.best_match(q, min_overlap=min_overlap, max_mismatch=max_mismatch)
+  if ma.aligned:
+    ma.insert(q)
+  else:
+    contigs.add(q)
 
 proc insert*(contigs: var seq[Contig], q:string, start:int, min_overlap:int=50, max_mismatch:int=0) =
   var qc = make_contig(q, start)
   contigs.insert(qc, min_overlap=min_overlap, max_mismatch=max_mismatch)
 
+proc combine*(contigs: var seq[Contig], max_mismatch:int=0): seq[Contig] =
+  ## merge contigs. note that this modifies the contigs in-place.
+  contigs.sort(proc (a, b: Contig): int = return b.len - a.len)
+  var used = initSet[int]()
+
+  for i in 0..contigs.high:
+    var ma = contigs.best_match(contigs[i], max_mismatch=max_mismatch)
+    if ma.aligned:
+      ma.insert(contigs[i])
+      used.incl(i)
+  if used.len == 0:
+    return contigs
+
+  var k = 0
+  for i in 0..contigs.high:
+    if i in used: continue
+    contigs[k] = contigs[i]
+    k += 1
+  contigs = contigs[0..<k]
+  contigs.sort(proc (a, b: Contig): int = return b.len - a.len)
+  return contigs
+
 when isMainModule:
   import unittest
+
+  proc allow_test(qsup: uint32, tsup: uint32, qreads:int, treads:int): bool =
+    ## default implementation to determine if we can overwrite a mismatch
+    return ((qsup < 3'u32 and tsup > 3'u32 * qsup) or 
+           (tsup < 3'u32 and qsup > 3'u32 * tsup))
 
   suite "contig":
     test "slide_align positive":
@@ -250,11 +291,11 @@ when isMainModule:
       var t = make_contig("ATTAACTGGGTACGGTTTGGGG", 0, 2)
       var q = make_contig( "TTAACTGGGXACGGTTTGG", 0, 6)
 
-      var ma = q.slide_align(t, min_overlap=5)
+      var ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
       check ma.corrections == nil
 
       q = make_contig( "TTAACTGGGXACGGTTTGG", 0, 7)
-      ma = q.slide_align(t, min_overlap=5)
+      ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
       check ma.corrections.len == 1
       check q.sequence[ma.corrections[0].qoff] == 'X'
       check t.sequence[ma.corrections[0].toff] == 'T'
@@ -262,7 +303,7 @@ when isMainModule:
 
       t = make_contig(    "ATTAACTGGGAACGGTTTGGGG", 0, 7)
       q = make_contig("GGAGATTAACTGGGXACGGTTTGG", 0, 2)
-      ma = q.slide_align(t, min_overlap=5)
+      ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
       check ma.corrections.len == 1
       check q.sequence[ma.corrections[0].qoff] == 'X'
       check t.sequence[ma.corrections[0].toff] == 'A'
@@ -285,7 +326,7 @@ when isMainModule:
       var t = make_contig(    "ATTAACTGGGTACGGTTTGGGG", 3, 7)
       var q = make_contig("GGAGATTAACTGGGXACGGTTTGG", 1, 2)
 
-      var ma = q.slide_align(t, min_overlap=5)
+      var ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
       check ma.aligned
       ma.insert(q)
       check t.sequence == "GGAGATTAACTGGGTACGGTTTGGGG"
@@ -297,7 +338,7 @@ when isMainModule:
        
       t = make_contig(    "ATTAACTGGGTACGGTTTGGGG", 5, 2)
       q = make_contig("GGAGATTAACTGGGXACGGTTTGG", 0, 7)
-      ma = q.slide_align(t, min_overlap=5)
+      ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
 
       ma.insert(q)
       check t.start == 0
@@ -308,7 +349,7 @@ when isMainModule:
 
       t = make_contig(    "ATTAACTGGGTAC", 3, 7)
       q = make_contig("GGAGATTAACTGGGXACGGTTTGG", 0, 2)
-      ma = q.slide_align(t, min_overlap=5)
+      ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
       check ma.aligned
       ma.insert(q)
       check t.sequence == "GGAGATTAACTGGGTACGGTTTGG"
@@ -318,7 +359,7 @@ when isMainModule:
     test "insertion right overhang":
       var t = make_contig("GGAGATTAACTGGGXACGGTTTGG", 1, 2)
       var q = make_contig(    "ATTAACTGGGTACGGTTTGGGG", 3, 7)
-      var ma = q.slide_align(t, min_overlap=5)
+      var ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
       check ma.aligned
       ma.insert(q)
       check t.start == 1
@@ -329,7 +370,7 @@ when isMainModule:
       t = make_contig("GGAGATTAACTGGGXACGGTTTGG", 90, 7)
       q = make_contig("GGAGATTAACTGGGTACGGTTTGGGG", 90, 2)
       check t.sequence.len == 24
-      ma = q.slide_align(t, min_overlap=5)
+      ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
       check ma.offset == 0
       check ma.aligned
       ma.insert(q)
@@ -339,7 +380,7 @@ when isMainModule:
 
       t = make_contig(   "GGAGATTAACTGGGXACGGTTTGG", 0, 2)
       q = make_contig("AAAGGAGATTAACTGGGTACGGTTTGGGG", 3, 7)
-      ma = q.slide_align(t, min_overlap=5)
+      ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
       check ma.offset == -3
       ma.insert(q)
       check t.sequence.len == q.sequence.len

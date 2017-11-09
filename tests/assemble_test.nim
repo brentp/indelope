@@ -101,7 +101,6 @@ suite "assemble-suite":
     check res.split("\n")[2].strip() == "+"
     check res.split("\n")[3].len == c.len
 
-
 suite "match-suite":
 
   test "match sorting":
@@ -116,3 +115,4 @@ suite "match-suite":
     check mas[0].mm == 4
     check mas[0].matches == 100
     check mas[1].matches == 100
+
