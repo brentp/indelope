@@ -53,12 +53,37 @@ type
     alt_kmer*: string
     AD*: array[2, int]
 
+proc info(v:Variant): string =
+   return ("DP=" & $(v.AD[0] + v.AD[1]) &
+           ";ref_kmer=" & $v.ref_kmer &
+           ";alt_kmer=" & $v.alt_kmer)
+
+const header = """##fileformat=VCFv4.2
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the ref and alt alleles in the order listed">
+##INFO=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the ref and alt alleles in the order listed">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">
+##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Difference in length between REF and ALT alleles">
+##INFO=<ID=DP,Number=1,Type=Integer,Description="supporting k-mer depth">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="supporting k-mer depth">
+##FORMAT=<ID=GQ,Number=1,Type=Float,Description="Genotype Quality">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=GL,Number=G,Type=Integer,Description="Normalized, Phred-scaled likelihoods for genotypes as defined in the VCF specification">
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Approximate read depth; some reads may have been filtered">
+##INFO=<ID=ref_kmer,Number=1,Type=String,Description="reference kmer used for genotyping">
+##INFO=<ID=alt_kmer,Number=1,Type=String,Description="alternate kmer used for genotyping">
+$1
+#CHROM  POS ID  REF ALT QUAL  FILTER  INFO	FORMAT	$2"""
+
 proc `$`*(v:Variant): string =
-  return format("$#:$# ref:$# alt:$# gt:$# AD:[$#, $#]" % [v.chrom, $v.start, v.reference, v.alternate, $v.genotype, $v.AD[0], $v.AD[1]])
+  return format("$chrom\t$pos\t$id\t$ref\t$alt\t$qual\tPASS\t$info\tGT:GL\t$gt" %
+                ["chrom", v.chrom, "pos", $v.start, "id", ".",
+                 "ref", v.reference, "alt", v.alternate,
+                 "qual", formatFloat(v.genotype.qual, precision=2, format=ffDecimal), "info", v.info(), "gt", $(v.genotype)])
 
 proc same(a:Variant, b:Variant): bool =
   if a == nil or b == nil: return false
   return (a.start == b.start) and (a.chrom == b.chrom) and (a.reference == b.reference) and (a.alternate == b.alternate)
+
 
 iterator callsemble(r: roi, fai: Fai, ez: Ez, bp_overlap:int=5, kmer_length:int=31): Variant =
   block breakable: # use this so we can leave the entire function if no results are found
@@ -223,6 +248,13 @@ iterator gen_roi(b:Bam, t:Target, min_event_support:uint8=4, min_read_coverage:i
   for roi in gen_roi_internal(evidence, cache, min_event_support, min_read_coverage, last_start, evidence.len):
     yield roi
 
+## make proper vcf header.
+proc make_contig_header(t:Target): string =
+  return "##contig=<ID=$1,length=$2>" % [t.name, $t.length]
+
+proc contig_header(b: Bam): string =
+  return join(map(b.hdr.targets, make_contig_header), "\n")
+
 when isMainModule:
 
   var b:Bam
@@ -237,11 +269,13 @@ when isMainModule:
   ]#
   var ez = new_ez()
   var last_var: Variant
-  for r in gen_roi(b, targets[0]):
-    for v in callsemble(r, fai, ez):
-      if v.same(last_var): continue
-      echo v
-      last_var = v
+  echo header % [b.contig_header, "sample"]
+  for target in targets:
+    for r in gen_roi(b, target):
+      for v in callsemble(r, fai, ez):
+        if v.same(last_var): continue
+        echo v
+        last_var = v
 
   #[
   let version = "indelope 0.0.1"
