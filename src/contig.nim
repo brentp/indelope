@@ -58,13 +58,14 @@ proc slide_align*(q: Contig, t:Contig, min_overlap:int=50, max_mismatch:int=0, a
   var best_ma = min_overlap - 1
   var best_mm = max_mismatch + 1
   var best_correction: seq[correction_site]
-  var correction = new_seq[correction_site](6)
+  var correction = new_seq[correction_site](1)
+  var qo, to, mm, ma: int
   for o in 0..omax:
-    correction.set_len(0)
-    var qo = 0
-    var to = o
-    var mm = 0
-    var ma = 0
+    if len(correction) != 0: correction.set_len(0)
+    qo = 0
+    to = o
+    mm = 0
+    ma = 0
     while qo < len(q) and to < len(t):
       if q[qo] != t[to]:
         if not allowed(q.support[qo], t.support[to], q.nreads, t.nreads):
@@ -88,11 +89,11 @@ proc slide_align*(q: Contig, t:Contig, min_overlap:int=50, max_mismatch:int=0, a
 
   # skip zero as we did that above.
   for o in 1..abs(omin):
-    correction.set_len(0)
-    var qo = o
-    var to = 0
-    var mm = 0
-    var ma = 0
+    if len(correction) != 0: correction.set_len(0)
+    qo = o
+    to = 0
+    mm = 0
+    ma = 0
 
     while qo < len(q) and to < len(t):
       if q[qo] != t[to]:
@@ -197,7 +198,7 @@ proc insert*(m:Match, q:Contig) =
   m.contig.nreads += q.nreads
 
 proc best_match(contigs: var seq[Contig], q:Contig, min_overlap:int=50, max_mismatch:int=0): Match =
-  var matches = new_seq_of_cap[Match](contigs.len)
+  var matches = new_seq_of_cap[Match](2)
   for c in contigs:
     if c == q: continue
     # q always first to slide_align

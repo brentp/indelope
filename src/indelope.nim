@@ -113,15 +113,22 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
     var reference = fai.get(chrom, ctg.start, max_stop)
     ctg.sequence.align_to(reference, ez)
 
-    var locs = toSeq(ez.target_locations(ctg.start))
     var qlocs = toSeq(ez.query_locations())
+    var ii = 0
 
-    for i, loc in locs:
+    for loc in ez.target_locations(ctg.start):
       if loc.len.int < min_event_len: continue
       var ref_kmer = reference[(loc.start - ctg.start - (int((K + 1) / 2) - 1))..<(loc.start - ctg.start + int((K + 1) / 2))]
-      var qloc = qlocs[i]
+      var qloc = qlocs[ii]
+      ii += 1
       # TODO: check alt_kmer against squeakr database of known reference kmers slide along to find a unique one.
+      var qstart = qloc.start
+
       var alt_kmer = ctg.sequence[(qloc.start - int((K + 1) / 2 - 1))..<(qloc.start + int((K + 1) / 2))]
+      if len(ref_kmer) != len(alt_kmer):
+        stderr.write_line("bug!!! kmer lengths should be equal, ref:" & $ref_kmer.len & " alt:" & $alt_kmer.len)
+        stderr.write_line("bug!!! qloc start:" & $qloc.start & " ctg len:" & $ctg.len & " genomic position:" & $loc.start )
+        #quit()
 
       var refe = ref_kmer.mincode()
       var alte = alt_kmer.mincode()
@@ -132,7 +139,7 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
       for read in r.reads:
         var ref_found = false
         var alt_found = false
-        for e in read.sequence(ss).slide(31):
+        for e in read.sequence(ss).slide(K):
             if e == refe: ref_support += 1; ref_found = true
             if e == alte: alt_support += 1; alt_found = true
         if ref_found and alt_found:
@@ -173,7 +180,7 @@ proc overlaps(r: Record, start:int, stop:int): bool {.inline.} =
   if r.stop < start: return false
   return true
 
-iterator gen_roi_internal(evidence: seq[uint8], cache:seq[Record], min_evidence:uint8, min_reads:int, cache_start:int, cache_end:int): roi {.inline.} =
+iterator gen_roi_internal(evidence: seq[uint8], cache:seq[Record], min_evidence:uint8, min_reads:int, max_reads:int, cache_start:int, cache_end:int): roi {.inline.} =
   ## given the counts in evidence and a region to look in (cache_start .. cache_end)
   ## yield regions where the values in evidence are >= min_evidence along with reads from that region.
   ## futher filter to those regoins that have > min_reads that overlap the putative event 
@@ -197,8 +204,9 @@ iterator gen_roi_internal(evidence: seq[uint8], cache:seq[Record], min_evidence:
       for r in cache:
         if r.overlaps(roi_start, roi_end):
           reads.add(r)
+          if len(reads) > max_reads: break
         if r.start > roi_end: break
-      if len(reads) >= min_reads:
+      if len(reads) >= min_reads and len(reads) <= max_reads:
         yield (roi_start, roi_end, reads)
       in_roi = false
 
@@ -207,12 +215,13 @@ iterator gen_roi_internal(evidence: seq[uint8], cache:seq[Record], min_evidence:
     for r in cache:
       if r.overlaps(roi_start, roi_end):
         reads.add(r)
+        if len(reads) > max_reads: break
       if r.start > roi_end: break
 
-    if len(reads) >= min_reads:
+    if len(reads) >= min_reads and len(reads) <= max_reads:
       yield (roi_start, roi_end, reads)
 
-iterator gen_roi(b:Bam, t:Target, min_event_support:uint8=4, min_read_coverage:int=4): roi =
+iterator gen_roi(b:Bam, t:Target, min_event_support:uint8=4, min_read_coverage:int=4, max_read_coverage:int=200): roi =
   # we iterate over the bam an increment an evidence counter in an genomic array for positions
   # that appear to have an event (any non match)
   # whenever we have a gap in coverage where start > last_end, we check the evidence
@@ -223,11 +232,11 @@ iterator gen_roi(b:Bam, t:Target, min_event_support:uint8=4, min_read_coverage:i
   var cache = new_seq_of_cap[Record](100000)
   # we use last_start to make sure we dont keep iterating over the same chunk of evidence.
   var last_start = 0
-  
+
   for r in b.querys(t.name):
     if r.skippable: continue
     if cache.len > 0 and r.start > cache[cache.high].stop:
-      for roi in gen_roi_internal(evidence, cache, min_event_support, min_read_coverage, last_start, r.start):
+      for roi in gen_roi_internal(evidence, cache, min_event_support, min_read_coverage, max_read_coverage, last_start, r.start):
         yield roi
       # reset
       last_start = r.start
@@ -240,7 +249,7 @@ iterator gen_roi(b:Bam, t:Target, min_event_support:uint8=4, min_read_coverage:i
         # reset after avoid overflow
         if evidence[i] == 0:
           evidence[i] = 255
-  for roi in gen_roi_internal(evidence, cache, min_event_support, min_read_coverage, last_start, evidence.len):
+  for roi in gen_roi_internal(evidence, cache, min_event_support, min_read_coverage, max_read_coverage, last_start, evidence.len):
     yield roi
 
 
