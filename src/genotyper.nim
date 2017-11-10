@@ -19,9 +19,6 @@ const gt_encodings = ["0/0", "0/1", "1/1", "./."]
 proc `$`*(g:GT): string =
   return gt_encodings[g.int]
 
-proc `$`*(g:Genotype): string =
-  return $g.GT & ":" & formatFloat(g.GL[0], format=ffDecimal, precision=gl_precision) & "," & formatFloat(g.GL[1], format=ffDecimal, precision=gl_precision) & "," & formatFloat(g.GL[2], format=ffDecimal, precision=gl_precision)
-
 proc qual*(g:Genotype): float64 =
   if g.GT == GT.HOM_REF:
     return g.GL[0] - max(g.GL[1], g.GL[2])
@@ -30,6 +27,11 @@ proc qual*(g:Genotype): float64 =
   if g.GT == GT.HOM_ALT:
     return g.GL[2] - max(g.GL[0], g.GL[1])
   return 0
+
+proc `$`*(g:Genotype): string =
+  return ($g.GT &
+          ":" & formatFloat(g.qual, precision=gl_precision, format=ffDecimal) &
+          ":" & formatFloat(g.GL[0], format=ffDecimal, precision=gl_precision) & "," & formatFloat(g.GL[1], format=ffDecimal, precision=gl_precision) & "," & formatFloat(g.GL[2], format=ffDecimal, precision=gl_precision))
 
 proc genotype*(r:int, a:int, error:float64): Genotype =
   var total = float64(r + a)

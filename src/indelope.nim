@@ -1,6 +1,5 @@
 import osproc
-import assemble
-import binaryheap
+import contig
 import sequtils
 import os
 import times
@@ -11,19 +10,12 @@ import strutils
 import docopt
 import hts
 import ./ksw2/ksw2
+import kmer
+import genotyper
 
 type
-  cached_seq = tuple[start: int, stop: int, sequence: string]
-
-  InfoContig* = ref object of RootObj
-    ## InfoContig wraps a contig with additional info.
-    ctg*: Contig
-    chrom: string
-    qreads*: Heap[cached_seq]
-
-
-proc region(c: InfoContig): string =
-  return c.chrom & ":" & $c.ctg.start & "-" & $c.stop & "(" & $c.qreads.size & ")"
+  event = tuple[start: int, stop: int, len: int]
+  roi = tuple[start: int, stop: int, reads:seq[Record]]
 
 proc trim(sequence: var string, base_qualities: seq[uint8], min_quality:int=12) =
   var a = 0
@@ -41,190 +33,264 @@ proc trim(sequence: var string, base_qualities: seq[uint8], min_quality:int=12) 
   if a != 0 or b != base_qualities.high:
     sequence = sequence[a..b]
 
-
-proc dump_contigs(fq: File, ctgs: var Contigs, chrom: string, start: int, stop: int) =
-  ctgs = ctgs.combine(p_overlap=0.5)
-  for ctg in ctgs:
-    ctg.trim()
-  ctgs = ctgs.combine(p_overlap=0.5)
-  var fq_line = new_string_of_cap(500)
-  for nc, ctg in ctgs:
-    fq.write(ctg.fastq(fq_line, name=chrom & ":" & $(start + 1) & "-" & $stop & "#" & $(nc + 1) & "_of_" & $ctgs.len))
-
-proc align(prefix: string, reference: string) =
-   var ret = execCmd("bash -c 'set -eo pipefail; bwa mem -k 21 -L 3 $1 $2.fastq | samtools sort -o $3.bam && samtools index $4.bam'" % [reference, prefix, prefix, prefix])
-   if ret != 0:
-     quit(ret)
-  
-
-
-proc skippable(r: Record): bool {.inline.} =
+proc skippable(r: Record, allow_unmapped:bool=false): bool {.inline.} =
   if r.chrom == "hs37d5": return true
   if r.chrom.startswith("GL"): return true
   var f = r.flag
-  if f.dup or f.qcfail or f.unmapped: return true
+  if f.dup or f.qcfail: return true
+  if not allow_unmapped and f.unmapped: return true
   if f.supplementary or f.secondary: return true
   return false
 
-proc align(ctg:InfoContig, fai:Fai, ez:Ez) =
-  var target = fai.get(ctg.chrom, ctg.ctg.start, ctg.stop)
-  ctg.ctg.sequence.align_to(target, ez)
-  var s = ""
-  echo ctg.region, " ", ez.cigar_string(s), " ", ez.max_event_length
+type
+  Variant* = ref object of RootObj
+    chrom*: string
+    start*: int
+    reference*: string
+    alternate*: string
+    genotype*: Genotype
+    ref_kmer*: string
+    alt_kmer*: string
+    AD*: array[2, int]
 
-  #[
-  var cigar_str = ""
-  if aln.score > 0:
-    #echo "contig to reference"
-    var refCounts = 0
-    var altCounts = 0
-    var totCounts = 0
-    for r in ctg.qreads:
-      if r.stop < ctg.start: continue
-      if r.start > ctg.stop: continue
-      var q = r.sequence
-      totCounts += 1
-      var alnAlt = q.align_to(ctg.ctg.sequence, cfg)
-      var alnRef = q.align_to(target, cfg)
-      var altScore = alnAlt.score
-      var refScore = alnRef.score
- 
-      #echo "reference:", refScore
-      ##echo alnRef
-      #echo "alternate:", altScore
-      #echo alnAlt
-      if altScore == refScore: continue
-      if altScore > refScore:
-        if float64(altScore) > 0.90 * float64(len(q)):
-          altCounts += 1
-      else:
-        if float64(refScore) > 0.98 * float64(len(q)):
-          refCounts += 1
+proc info(v:Variant): string =
+   return ("DP=" & $(v.AD[0] + v.AD[1]) &
+           ";AD=" & $v.AD[0] & "," & $v.AD[1] &
+           ";ref_kmer=" & $v.ref_kmer &
+           ";alt_kmer=" & $v.alt_kmer)
 
-    if true and float64(refCounts + altCounts) >= 0.5 * float64(totCounts):
-      echo "#######################"
-      echo ctg.chrom, ":", ctg.start + aln.start, " " & aln.cigar(cigar_str)
-      echo $aln
-      echo aln.score
-      echo refCounts, " ", altCounts, " of total reads:", totCounts
-    if ctg.start + aln.start == 227636811811:
-      echo target
-      echo ctg.ctg.sequence
-      quit(1)
-    ]#
+const header = """##fileformat=VCFv4.2
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the ref and alt alleles in the order listed">
+##INFO=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the ref and alt alleles in the order listed">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">
+##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Difference in length between REF and ALT alleles">
+##INFO=<ID=DP,Number=1,Type=Integer,Description="supporting k-mer depth">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="supporting k-mer depth">
+##FORMAT=<ID=GQ,Number=1,Type=Float,Description="Genotype Quality">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=GL,Number=G,Type=Float,Description="Normalized, Phred-scaled likelihoods for genotypes as defined in the VCF specification">
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Approximate read depth; some reads may have been filtered">
+##INFO=<ID=ref_kmer,Number=1,Type=String,Description="reference kmer used for genotyping">
+##INFO=<ID=alt_kmer,Number=1,Type=String,Description="alternate kmer used for genotyping">
+$1
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	$2"""
 
-iterator assembler(path: string, prefix: string, min_reads:int=5, min_ctg_length:int=150): InfoContig =
-  var b: Bam
-  open(b, path, index=true)
-  var fq: File
-  var fname = prefix
-  fname = fname.strip(chars={'.'}) & ".fastq"
+proc `$`*(v:Variant): string =
+  return format("$chrom\t$pos\t$id\t$ref\t$alt\t$qual\tPASS\t$info\tGT:GQ:GL\t$gt" %
+                ["chrom", v.chrom, "pos", $v.start, "id", ".",
+                 "ref", v.reference, "alt", v.alternate,
+                 "qual", formatFloat(v.genotype.qual, precision=2, format=ffDecimal), "info", v.info(), "gt", $(v.genotype)])
 
-  if not open(fq, fname, fmWrite):
-    quit(2)
+proc same(a:Variant, b:Variant): bool =
+  if a == nil or b == nil: return false
+  return (a.start == b.start) and (a.chrom == b.chrom) and (a.reference == b.reference) and (a.alternate == b.alternate)
+
+iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=4, min_event_len:int=4, K:int=29): Variant =
+
+  var contigs = new_seq[Contig]()
+  var read_seq = ""
+  # assemble the alt contig
+  for read in r.reads:
+    if read.skippable(allow_unmapped=true): continue
+    contigs.insert(read.sequence(read_seq), read.start)
+  var ucontigs = new_seq_of_cap[Contig](contigs.len)
+
+  for c in contigs:
+    if c.nreads < min_reads or c.len < min_ctg_len: continue
+    ucontigs.add(c)
+  contigs = ucontigs
 
   var sequence = ""
-  var bqs = new_seq[uint8]()
-  var ctgs : seq[Contig]
-  var region : string
-  var targets: seq[string]
+  var ss = ""
+  var chrom = r.reads[0].chrom
+
+  for ctg in contigs:
+
+    var max_stop = ctg.start
+    for read in r.reads:
+      max_stop = max(max_stop, read.stop)
+
+    var reference = fai.get(chrom, ctg.start, max_stop)
+    ctg.sequence.align_to(reference, ez)
+
+    var locs = toSeq(ez.target_locations(ctg.start))
+    var qlocs = toSeq(ez.query_locations())
+
+    for i, loc in locs:
+      if loc.len.int < min_event_len: continue
+      var ref_kmer = reference[(loc.start - ctg.start - (int((K + 1) / 2) - 1))..<(loc.start - ctg.start + int((K + 1) / 2))]
+      var qloc = qlocs[i]
+      # TODO: check alt_kmer against squeakr database of known reference kmers slide along to find a unique one.
+      var alt_kmer = ctg.sequence[(qloc.start - int((K + 1) / 2 - 1))..<(qloc.start + int((K + 1) / 2))]
+
+      var refe = ref_kmer.mincode()
+      var alte = alt_kmer.mincode()
+      var alt_support = 0
+      var ref_support = 0
+
+      var both_found = false
+      for read in r.reads:
+        var ref_found = false
+        var alt_found = false
+        for e in read.sequence(ss).slide(31):
+            if e == refe: ref_support += 1; ref_found = true
+            if e == alte: alt_support += 1; alt_found = true
+        if ref_found and alt_found:
+            both_found = true
+            break
+
+      if alt_support < min_reads or both_found: continue
+
+      var gt = genotype(ref_support, alt_support, 1e-4)
+      if gt.GT == GT.HOM_REF: continue
+      var v = Variant(chrom: chrom, start: loc.start, genotype: gt, ref_kmer: ref_kmer,
+                  alt_kmer: alt_kmer, AD: [ref_support, alt_support])
+
+      if loc.event_type == Deletion:
+        v.reference = fai.get(chrom, loc.start - 1, loc.stop - 1)
+        v.alternate = v.reference[0..<1]
+      else:
+        v.alternate = ctg.sequence[(qloc.start - 1)..<(qloc.stop)]
+        v.reference = v.alternate[0..<1]
+      yield v
+
+iterator event_locations(r: Record): event {.inline.} =
+  ## the genomic start-end of the location of the event
+  ## TODO: SA tags
+  var off: int
+  for c in r.cigar:
+    var cons = c.consumes.reference
+    if c.op != CigarOp.match:
+      if cons:
+        yield (r.start + off, r.start + off + c.len, c.len)
+      else:
+        yield (r.start + off, r.start + off + 1, c.len)
+    if cons:
+      off += c.len
+
+proc overlaps(r: Record, start:int, stop:int): bool {.inline.} =
+  if r.start > stop: return false
+  if r.stop < start: return false
+  return true
+
+iterator gen_roi_internal(evidence: seq[uint8], cache:seq[Record], min_evidence:uint8, min_reads:int, cache_start:int, cache_end:int): roi {.inline.} =
+  ## given the counts in evidence and a region to look in (cache_start .. cache_end)
+  ## yield regions where the values in evidence are >= min_evidence along with reads from that region.
+  ## futher filter to those regoins that have > min_reads that overlap the putative event 
+  ## TODO: filter out high-coverage regions with, e.g. 4 supporting reads out of 1000.
+  var in_roi = false
+  var roi_start = 0
+  var roi_end = 0
+
+  for i in cache_start..cache_end:
+    var ev = evidence[i]
+    if ev >= min_evidence:
+      if not in_roi:
+        in_roi = true
+        roi_start = i
+      roi_end = i
+      continue
+
+    # ending a region, yield the roi
+    if in_roi:
+      var reads = new_seq_of_cap[Record](16)
+      for r in cache:
+        if r.overlaps(roi_start, roi_end):
+          reads.add(r)
+        if r.start > roi_end: break
+      if len(reads) >= min_reads:
+        yield (roi_start, roi_end, reads)
+      in_roi = false
+
+  if in_roi:
+    var reads = new_seq_of_cap[Record](16)
+    for r in cache:
+      if r.overlaps(roi_start, roi_end):
+        reads.add(r)
+      if r.start > roi_end: break
+
+    if len(reads) >= min_reads:
+      yield (roi_start, roi_end, reads)
+
+iterator gen_roi(b:Bam, t:Target, min_event_support:uint8=4, min_read_coverage:int=4): roi =
+  # we iterate over the bam an increment an evidence counter in an genomic array for positions
+  # that appear to have an event (any non match)
+  # whenever we have a gap in coverage where start > last_end, we check the evidence
+  # array for any regions with >= min_event_support that indicate an event.
+  # we yield the bounds of the event and the reads that overlapped it.
+
+  var evidence = new_seq[uint8](t.length)
+  var cache = new_seq_of_cap[Record](100000)
+  # we use last_start to make sure we dont keep iterating over the same chunk of evidence.
+  var last_start = 0
   
-  #region = "3:120971087-120971287"
-  if region == nil:
-    targets = map(b.hdr.targets, proc(a: Target): string = return a.name)
-  else:
-    targets = @[region]
+  for r in b.querys(t.name):
+    if r.skippable: continue
+    if cache.len > 0 and r.start > cache[cache.high].stop:
+      for roi in gen_roi_internal(evidence, cache, min_event_support, min_read_coverage, last_start, r.start):
+        yield roi
+      # reset
+      last_start = r.start
+      cache.set_len(0)
 
-  for target in targets:
-    ctgs = new_seq[Contig]()
-    var
-      contig_start = -1000
-      contig_stop = -1000
-      in_region = false
+    cache.add(r.copy())
+    for e in r.event_locations:
+      for i in e.start..<e.stop:
+        evidence[i] += 1
+        # reset after avoid overflow
+        if evidence[i] == 0:
+          evidence[i] = 255
+  for roi in gen_roi_internal(evidence, cache, min_event_support, min_read_coverage, last_start, evidence.len):
+    yield roi
 
-    var qreads = new_seq_of_cap[cached_seq](1000)
- 
-    for r in b.querys(target):
-      if r.skippable: continue
-      discard r.sequence(sequence)
-      discard r.base_qualities(bqs)
-      var tmp = sequence
-      tmp.trim(bqs)
-      if tmp.len < 50: continue
-      var is_informative = r.aux("SA") != nil or r.cigar.len > 1
 
-      for i, contig in contigs:
-        if r.start > contig.start + contig.sequence.length
+## make proper vcf header.
+proc make_contig_header(t:Target): string =
+  return "##contig=<ID=$1,length=$2>" % [t.name, $t.length]
 
-      # too far, so start a new region
-      if r.start > contig_stop and in_region:
-        #fq.dump_contigs(ctgs, target, contig_start, contig_stop)
-        for contig in ctgs:
-          if contig.len < min_ctg_length: continue
-          if contig.nreads < min_reads: continue
-          yield InfoContig(ctg: contig, chrom:target, stop: contig_stop, qreads: qreads)
-        #align_to_contigs(ctgs, target, qreads, contig_start, contig_end)
-
-        # make a new set of contigs
-        ctgs.set_len(0)
-        in_region = false
-
-      if is_informative:
-        if not in_region:
-          contig_start = r.start
-          in_region = true
-
-        discard ctgs.insert(tmp, r.start)
-        contig_stop = max(contig_stop, r.stop)
-
-      # add all reads that are long enough to the queue
-      qreads.push((r.start, r.stop, tmp))
-
-      while qreads.size > 0 and qreads.peek.stop < contig_start:
-        discard qreads.pop()
-
-    fq.dump_contigs(ctgs, target, contig_start, contig_stop)
-    for contig in ctgs:
-      if contig.len < min_ctg_length: continue
-      if contig.nreads < min_reads: continue
-      yield InfoContig(ctg: contig, chrom:target, stop:contig_stop, qreads: qreads)
-
-  close(fq)
-  #return fname
-
+proc contig_header(b: Bam): string =
+  return join(map(b.hdr.targets, make_contig_header), "\n")
 
 when isMainModule:
   let version = "indelope 0.0.1"
   let doc = format("""
   $version
 
-  Usage: indelope [options] <prefix> <reference> <BAM-or-CRAM>
+  Usage: indelope [options] <reference> <BAM-or-CRAM>
 
 Arguments:
 
-	<prefix>      output prefix.
-  <BAM-or-CRAM> call variants in this file.
+  <reference>     reference fasta file.
+  <BAM-or-CRAM>   call variants in this file.
 
 Options:
-  
-  -m --min-reads <INT>      minimum number of reads to send for alignment [default: 3]
-  -c --min-contig-len <INT>      minimum contig length to send for alignment [default: 90]
-  -h --help                       show help
+
+  -m --min-reads <INT>        minimum number of reads to send for alignment [default: 3]
+  -c --min-contig-len <INT>   minimum contig length to send for alignment [default: 73]
+  -e --min-event-len <INT>    minimum size of indel to report [default: 4]
+  -t --threads <INT>          number of cram/bam decompression threads [default: 1]
+  -h --help                   show help
 
   """ % ["version", version])
 
   let
      args = docopt(doc, version = version)
      min_reads = parse_int($args["--min-reads"])
-     min_ctg_length = parse_int($args["--min-contig-len"])
-     cram_path = $args["<BAM-or-CRAM>"]
+     min_ctg_len = parse_int($args["--min-contig-len"])
+     min_event_len = parse_int($args["--min-event-len"])
+     bam_path = $args["<BAM-or-CRAM>"]
      fai = open_fai($args["<reference>"])
 
-  var ez = new_ez()
-  for contig in assembler(cram_path, $args["<prefix>"], min_reads=min_reads, min_ctg_length=min_ctg_length):
-    contig.align(fai, ez)
+  var b:Bam
+  open(b, bam_path, index=true, threads=parse_int($args["--threads"]))
+  var targets = b.hdr.targets
 
-  #align($args["<prefix>"], $args["<reference>"])
-  let bam = $args["<prefix>"] & ".bam"
-  echo $bam
-  echo "now find indels"
+  var ez = new_ez()
+  var last_var: Variant
+  echo header % [b.contig_header, "sample"]
+  for target in targets:
+    for r in gen_roi(b, target, min_read_coverage=min_reads, min_event_support=min_reads.uint8):
+      for v in callsemble(r, fai, ez, min_ctg_len=min_ctg_len, min_reads=min_reads, min_event_len=min_event_len):
+        if v.same(last_var): continue
+        echo v
+        last_var = v
