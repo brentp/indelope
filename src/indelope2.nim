@@ -42,72 +42,97 @@ proc skippable(r: Record, allow_unmapped:bool=false): bool {.inline.} =
   if f.supplementary or f.secondary: return true
   return false
 
+type
+  Variant* = ref object of RootObj
+    chrom*: string
+    start*: int
+    reference*: string
+    alternate*: string
+    genotype*: Genotype
+    ref_kmer*: string
+    alt_kmer*: string
+    AD*: array[2, int]
 
-proc assemble(r: roi, fai: Fai, ez: Ez, bp_overlap:int=5) =
-  var contigs = new_seq[Contig]()
-  var sequence = ""
-  var read_seq = ""
-  var ss = ""
-  # assemble the alt contig
-  for read in r.reads:
-    if read.skippable(allow_unmapped=true): continue
-    contigs.insert(read.sequence(sequence), read.start)
-  var k = 0
-  var before = len(contigs)
-  contigs = filter(contigs.combine(), proc(x: Contig): bool = x.nreads >= 4 and x.len > 73)
-  if len(contigs) == 0: return
+proc `$`*(v:Variant): string =
+  return format("$#:$# ref:$# alt:$# gt:$# AD:[$#, $#]" % [v.chrom, $v.start, v.reference, v.alternate, $v.genotype, $v.AD[0], $v.AD[1]])
 
-  var location = r.reads[0].chrom & ":" & $r.start & "-" & $r.stop
-  var gls: array[3, float64]
+proc same(a:Variant, b:Variant): bool =
+  if a == nil or b == nil: return false
+  return (a.start == b.start) and (a.chrom == b.chrom) and (a.reference == b.reference) and (a.alternate == b.alternate)
 
-  var K = 31
-  for ctg in contigs:
+iterator callsemble(r: roi, fai: Fai, ez: Ez, bp_overlap:int=5, kmer_length:int=31): Variant =
+  block breakable: # use this so we can leave the entire function if no results are found
 
-    var max_stop = ctg.start
+    var contigs = new_seq[Contig]()
+    var read_seq = ""
+    # assemble the alt contig
     for read in r.reads:
-      max_stop = max(max_stop, read.stop)
+      if read.skippable(allow_unmapped=true): continue
+      contigs.insert(read.sequence(read_seq), read.start)
+    contigs = filter(contigs.combine(), proc(x: Contig): bool = x.nreads >= 4 and x.len > 73)
 
-    var reference = fai.get(r.reads[0].chrom, ctg.start, max_stop)
-    ctg.sequence.align_to(reference, ez)
+    if len(contigs) == 0: break breakable
 
-    if ez.max_event_length < 3: continue
+    var sequence = ""
+    var ss = ""
+    var chrom = r.reads[0].chrom
 
-    var locs = toSeq(ez.target_locations(ctg.start))
-    if locs.len > 6: continue
-    # now from locs, we get the event position and extract kmers there
-    var ref_kmer = reference[(locs[0].start - ctg.start - (int((K + 1) / 2) - 1))..<(locs[0].start - ctg.start + int((K + 1) / 2))]
+    for ctg in contigs:
 
-    var qlocs = toSeq(ez.query_locations())
-    # TODO: check alt_kmer against squeakr database of known reference kmers slide along to find a unique one.
-    # TODO: check all elements and qlocs and make sure the match then output phased variant.
-    var alt_kmer = ctg.sequence[(qlocs[qlocs.high].start - int((K + 1) / 2 - 1))..<(qlocs[qlocs.high].start + int((K + 1) / 2))]
+      var max_stop = ctg.start
+      for read in r.reads:
+        max_stop = max(max_stop, read.stop)
 
-    var refe = ref_kmer.mincode()
-    var alte = alt_kmer.mincode()
-    var alt_support = 0
-    var ref_support = 0
+      var reference = fai.get(chrom, ctg.start, max_stop)
+      ctg.sequence.align_to(reference, ez)
 
-    var both_found = false
-    for read in r.reads:
-      var ref_found = false
-      var alt_found = false
-      for e in read.sequence(ss).slide(K):
-          if e == refe: ref_support += 1; ref_found = true
-          if e == alte: alt_support += 1; alt_found = true
-      if ref_found and alt_found:
-          both_found = true
-          break
+      if ez.max_event_length < 3: continue
 
-    if alt_support < 3 or both_found: continue
-    #echo "\n\n", ez.cigar_string(sequence),  " nreads:", ctg.nreads, " len c reads:", len(r.reads)
-    #echo "locs:", locs
-    #echo ez.draw(ctg.sequence, reference)
-    #echo ctg.support
-    echo "chrom:", r.reads[0].chrom, " location:", locs, " ref support:", ref_support, " alt_support:", alt_support, " both found:", both_found
-    var gt = genotype(ref_support + alt_support, alt_support, 1e-4, gls)
-    echo gt, " ", gls[0], ",", gls[1], ",", gls[2]
-    echo "ref_kmer:", ref_kmer.len, " ", ref_kmer
-    echo "alt_kmer:", alt_kmer.len, " ", alt_kmer
+      var locs = toSeq(ez.target_locations(ctg.start))
+      var qlocs = toSeq(ez.query_locations())
+      for i, loc in locs:
+      # now from locs, we get the event position and extract kmers there
+        var ref_kmer = reference[(loc.start - ctg.start - (int((kmer_length + 1) / 2) - 1))..<(loc.start - ctg.start + int((kmer_length + 1) / 2))]
+        var qloc = qlocs[i]
+        # TODO: check alt_kmer against squeakr database of known reference kmers slide along to find a unique one.
+        var alt_kmer = ctg.sequence[(qloc.start - int((kmer_length + 1) / 2 - 1))..<(qloc.start + int((kmer_length + 1) / 2))]
+
+        var refe = ref_kmer.mincode()
+        var alte = alt_kmer.mincode()
+        var alt_support = 0
+        var ref_support = 0
+
+        var both_found = false
+        for read in r.reads:
+          var ref_found = false
+          var alt_found = false
+          for e in read.sequence(ss).slide(kmer_length):
+              if e == refe: ref_support += 1; ref_found = true
+              if e == alte: alt_support += 1; alt_found = true
+          if ref_found and alt_found:
+              both_found = true
+              break
+
+        if alt_support < 3 or both_found: continue
+
+        var gt = genotype(ref_support, alt_support, 1e-4)
+        var v = Variant(chrom: chrom, start: loc.start, genotype: gt, ref_kmer: ref_kmer,
+                    alt_kmer: alt_kmer, AD: [ref_support, alt_support])
+
+        if loc.event_type == Deletion:
+          v.reference = fai.get(chrom, loc.start - 1, loc.stop - 1)
+          v.alternate = v.reference[0..<1]
+        else:
+          v.alternate = ctg.sequence[(qloc.start - 1)..<(qloc.stop)]
+          v.reference = v.alternate[0..<1]
+        #echo ez.draw(ctg.sequence, reference)
+        #echo ctg.support
+        #echo "chrom:", chrom, " location:", locs, " ref support:", ref_support, " alt_support:", alt_support, " both found:", both_found
+        #echo $gt
+        #echo "ref_kmer:", ref_kmer.len, " ", ref_kmer
+        #echo "alt_kmer:", alt_kmer.len, " ", alt_kmer
+        #echo locs
+        yield v
 
 iterator event_locations(r: Record): event {.inline.} =
   ## the genomic start-end of the location of the event
@@ -211,8 +236,12 @@ when isMainModule:
     echo r.chrom, " ", r.start, " ", r.cigar, " ", toSeq(r.event_locations)
   ]#
   var ez = new_ez()
+  var last_var: Variant
   for r in gen_roi(b, targets[0]):
-    assemble(r, fai, ez)
+    for v in callsemble(r, fai, ez):
+      if v.same(last_var): continue
+      echo v
+      last_var = v
 
   #[
   let version = "indelope 0.0.1"

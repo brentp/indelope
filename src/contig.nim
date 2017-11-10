@@ -180,7 +180,7 @@ proc insert*(m:Match, q:Contig) =
     m.contig.start = q.start
     return
 
-  # off-set  
+  # off-set
   #          qqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
   # tttttttttttttttttttttttttttttttt
   var original_len = t.len

@@ -60,16 +60,20 @@ proc max_event_length*(e: Ez): uint32 {.inline.} =
     if c.op != 0:
       result = max(result, c.length)
 
-type event* = tuple[start: int, stop: int, len: uint32]
+type event_type* = enum
+  Insertion
+  Deletion
+
+type event* = tuple[start: int, stop: int, len: uint32, event_type: event_type]
 
 iterator target_locations*(e: Ez, start:int): event {.inline.} =
   ## the genomic start-end of the location of the event
   var off = start
   for c in e.cigar:
     if c.op == 1: #I
-      yield (off, off + 1, c.length)
+      yield (off, off + 1, c.length, Insertion)
     elif c.op == 2: # D
-      yield (off, off + c.length.int, c.length)
+      yield (off, off + c.length.int, c.length, Deletion)
     if c.op != 1: # M or D
       off += c.length.int
 
@@ -78,9 +82,9 @@ iterator query_locations*(e: Ez, start:int=0): event {.inline.} =
   var off = start
   for c in e.cigar:
     if c.op == 2: # D
-      yield (off, off + 1, c.length)
+      yield (off, off + 1, c.length, Deletion)
     elif c.op == 1: # I
-      yield (off, off + c.length.int, c.length)
+      yield (off, off + c.length.int, c.length, Insertion)
     if c.op != 2: # M or I
       off += c.length.int
 
@@ -172,7 +176,7 @@ when isMainModule:
 
   var ez = new_ez()
 
-  tqry.align_to(tenc, ez)
+  tqry.align_to(tenc, ez, flag=KSW_EZ_EXTZ_ONLY or KSW_EZ_RIGHT)
 
   var cig = toSeq(ez.cigar)
 
@@ -197,7 +201,7 @@ when isMainModule:
       check cig[2].length == 26
 
       check cig.len == 3
-     
+
     test "ends":
       check ez.qstop == 98
       check ez.tstop == 117
@@ -227,7 +231,7 @@ when isMainModule:
   tgt = "TGGCGCCTTGGCCTACAGGGGCCGCGGTTGAGGGTGGGAGTGGGGGTGCACTGGCCAGCACCTCAGGAGCTGGGGGTGGTGGTGGGGGCGGTGGGGGTGGTGTTAGTACCCCATCTTTTAGGTCTGA"
   qry = "CCTCAGGAGCTGGGGGTGGTGGTGGGGGCGGTGGGGGTGGTGTTAGTACCCCATCTTGTAGGTCTGAAACACAAAGTGTGGGGTG"
 
-  qry.align_to(tgt, ez)
+  qry.align_to(tgt, ez, flag=KSW_EZ_EXTZ_ONLY or KSW_EZ_RIGHT)
   echo ez.draw(qry, tgt)
 
   for op in ez.cigar:
