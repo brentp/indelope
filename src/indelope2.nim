@@ -1,6 +1,5 @@
 import osproc
 import contig
-import binaryheap
 import sequtils
 import os
 import times
@@ -11,6 +10,8 @@ import strutils
 import docopt
 import hts
 import ./ksw2/ksw2
+import kmer
+import genotyper
 
 type
   event = tuple[start: int, stop: int, len: int]
@@ -32,33 +33,36 @@ proc trim(sequence: var string, base_qualities: seq[uint8], min_quality:int=12) 
   if a != 0 or b != base_qualities.high:
     sequence = sequence[a..b]
 
-proc skippable(r: Record): bool {.inline.} =
+proc skippable(r: Record, allow_unmapped:bool=false): bool {.inline.} =
   if r.chrom == "hs37d5": return true
   if r.chrom.startswith("GL"): return true
   var f = r.flag
-  if f.dup or f.qcfail or f.unmapped: return true
+  if f.dup or f.qcfail: return true
+  if not allow_unmapped and f.unmapped: return true
   if f.supplementary or f.secondary: return true
   return false
 
 
-proc assemble(r: roi, fai: Fai, ez: Ez, bp_overlap:int=4) =
+proc assemble(r: roi, fai: Fai, ez: Ez, bp_overlap:int=5) =
   var contigs = new_seq[Contig]()
   var sequence = ""
   var read_seq = ""
   var ss = ""
   # assemble the alt contig
   for read in r.reads:
-    if read.skippable: continue
+    if read.skippable(allow_unmapped=true): continue
     contigs.insert(read.sequence(sequence), read.start)
   var k = 0
   var before = len(contigs)
-  contigs = filter(contigs.combine(), proc(x: Contig): bool = x.nreads >= 4 and x.len > 75)
+  contigs = filter(contigs.combine(), proc(x: Contig): bool = x.nreads >= 4 and x.len > 73)
   if len(contigs) == 0: return
 
-  echo "#########################################################"
-  echo r.reads[0].chrom, ":", r.start, "-", r.stop, " n contigs:", len(contigs), " was:", before
-  
+  var location = r.reads[0].chrom & ":" & $r.start & "-" & $r.stop
+  var gls: array[3, float64]
+
+  var K = 31
   for ctg in contigs:
+
     var max_stop = ctg.start
     for read in r.reads:
       max_stop = max(max_stop, read.stop)
@@ -67,47 +71,43 @@ proc assemble(r: roi, fai: Fai, ez: Ez, bp_overlap:int=4) =
     ctg.sequence.align_to(reference, ez)
 
     if ez.max_event_length < 3: continue
-    var locs = toSeq(ez.event_locations(ctg.start))
-    if locs.len > 4: continue
 
-    echo "\n\n", ez.cigar_string(sequence),  " nreads:", ctg.nreads, " len c reads:", len(r.reads)
-    echo "locs:", locs
-    echo ez.draw(ctg.sequence, reference)
-    echo ctg.support
+    var locs = toSeq(ez.target_locations(ctg.start))
+    if locs.len > 6: continue
+    # now from locs, we get the event position and extract kmers there
+    var ref_kmer = reference[(locs[0].start - ctg.start - (int((K + 1) / 2) - 1))..<(locs[0].start - ctg.start + int((K + 1) / 2))]
 
-    var ref_support = 0
+    var qlocs = toSeq(ez.query_locations())
+    # TODO: check alt_kmer against squeakr database of known reference kmers slide along to find a unique one.
+    # TODO: check all elements and qlocs and make sure the match then output phased variant.
+    var alt_kmer = ctg.sequence[(qlocs[qlocs.high].start - int((K + 1) / 2 - 1))..<(qlocs[qlocs.high].start + int((K + 1) / 2))]
+
+    var refe = ref_kmer.mincode()
+    var alte = alt_kmer.mincode()
     var alt_support = 0
+    var ref_support = 0
 
+    var both_found = false
     for read in r.reads:
-      if read.stop < (locs[locs.high].stop + bp_overlap): continue
-      if read.start > (locs[locs.high].start - bp_overlap): continue
+      var ref_found = false
+      var alt_found = false
+      for e in read.sequence(ss).slide(K):
+          if e == refe: ref_support += 1; ref_found = true
+          if e == alte: alt_support += 1; alt_found = true
+      if ref_found and alt_found:
+          both_found = true
+          break
 
-      var offset = max(0, read.start - ctg.start)
-      read.sequence(read_seq).align_to(ctg.sequence[offset..<ctg.len], ez)
-      echo "\nread:", read.start, "..", read.stop
-      echo "contig score:",  ez.score, " cigar:", ez.cigar_string(ss), " full cigar:", ez.cigar_string(ss, full=true)
-      var cevents = toSeq(ez.event_locations(ctg.start + offset))
-      echo "events:", cevents
-      echo ez.draw(read_seq, ctg.sequence[offset..<ctg.len])
-      var ctg_score = ez.score
-
-      read_seq.align_to(reference[offset..<reference.len], ez)
-      echo "ref score::", ez.score, " ", "cigar:", ez.cigar_string(ss), " full cigar:", ez.cigar_string(ss, full=true)
-      echo "events:", toSeq(ez.event_locations(ctg.start + offset))
-      echo ez.draw(read_seq, reference[offset..<reference.len])
-      var ref_score = ez.score
-      if ctg_score >= 50 and ctg_score > 3 + ref_score:
-        alt_support += 1
-      elif ref_score >= 50 and ref_score > 3 + ctg_score:
-        ref_support += 1
-      elif ref_score >= 50 and len(cevents) == 0:
-        ref_support += 1
-       
-      
-    echo ref_support, " ", alt_support
-    quit()
-
-
+    if alt_support < 3 or both_found: continue
+    #echo "\n\n", ez.cigar_string(sequence),  " nreads:", ctg.nreads, " len c reads:", len(r.reads)
+    #echo "locs:", locs
+    #echo ez.draw(ctg.sequence, reference)
+    #echo ctg.support
+    echo "chrom:", r.reads[0].chrom, " location:", locs, " ref support:", ref_support, " alt_support:", alt_support, " both found:", both_found
+    var gt = genotype(ref_support + alt_support, alt_support, 1e-4, gls)
+    echo gt, " ", gls[0], ",", gls[1], ",", gls[2]
+    echo "ref_kmer:", ref_kmer.len, " ", ref_kmer
+    echo "alt_kmer:", alt_kmer.len, " ", alt_kmer
 
 iterator event_locations(r: Record): event {.inline.} =
   ## the genomic start-end of the location of the event
@@ -212,7 +212,6 @@ when isMainModule:
   ]#
   var ez = new_ez()
   for r in gen_roi(b, targets[0]):
-    echo r.start, " ", r.stop, " ", r.reads.len
     assemble(r, fai, ez)
 
   #[

@@ -62,7 +62,7 @@ proc max_event_length*(e: Ez): uint32 {.inline.} =
 
 type event* = tuple[start: int, stop: int, len: uint32]
 
-iterator event_locations*(e: Ez, start:int): event {.inline.} =
+iterator target_locations*(e: Ez, start:int): event {.inline.} =
   ## the genomic start-end of the location of the event
   var off = start
   for c in e.cigar:
@@ -71,6 +71,17 @@ iterator event_locations*(e: Ez, start:int): event {.inline.} =
     elif c.op == 2: # D
       yield (off, off + c.length.int, c.length)
     if c.op != 1: # M or D
+      off += c.length.int
+
+iterator query_locations*(e: Ez, start:int=0): event {.inline.} =
+  ## the genomic start-end of the location of the event
+  var off = start
+  for c in e.cigar:
+    if c.op == 2: # D
+      yield (off, off + 1, c.length)
+    elif c.op == 1: # I
+      yield (off, off + c.length.int, c.length)
+    if c.op != 2: # M or I
       off += c.length.int
 
 proc score*(e:Ez): int {.inline.} =
@@ -131,7 +142,7 @@ proc new_ez*(match:int8=1, mismatch:int8=(-2), gap_open:int8=3, gap_ext:int8=1):
             q:new_seq[uint8](1000),
             t:new_seq[uint8](1000))
 
-proc align_to*(query: var seq[uint8], target: var seq[uint8], ez:Ez, flag:cint=KSW_EZ_EXTZ_ONLY or KSW_EZ_RIGHT) {.inline.} =
+proc align_to*(query: var seq[uint8], target: var seq[uint8], ez:Ez, flag:cint=KSW_EZ_EXTZ_ONLY) {.inline.} =
   ## align an encoded query to an encoded target.
   var bw = -1 # TODO
   var z = -1
@@ -140,7 +151,7 @@ proc align_to*(query: var seq[uint8], target: var seq[uint8], ez:Ez, flag:cint=K
                 5.int8, cast[ptr int8](ez.mat[0].addr),
                 ez.gap_open, ez.gap_ext, bw.cint, z.cint, flag, ez.c.addr)
 
-proc align_to*(query: string, target: string, ez:Ez, flag:cint=KSW_EZ_EXTZ_ONLY or KSW_EZ_RIGHT) {.inline.} =
+proc align_to*(query: string, target: string, ez:Ez, flag:cint=KSW_EZ_EXTZ_ONLY) {.inline.} =
   ## align a query to a target with the parameters in ez
   ## the encoding is (re)done internally and re-uses memory to avoid allocations.
   query.encode(ez.q)
