@@ -1,7 +1,7 @@
 import algorithm
 import sets
 
-type 
+type
   Contig* = ref object of RootObj
     ## a contig is a collection of sequences that have been
     ## merged. the base_count indicates the number of reads supporting
@@ -41,7 +41,7 @@ proc `[]`*(c:Contig, i:int): char {.inline.} =
 
 proc allowable_mismatch(qsup: uint32, tsup: uint32, qreads:int, treads:int): bool =
   ## default implementation to determine if we can overwrite a mismatch
-  return ((qsup < 3'u32 and tsup > 3'u32 * qsup and qreads > 3 * int(qsup)) or 
+  return ((qsup < 3'u32 and tsup > 3'u32 * qsup and qreads > 3 * int(qsup)) or
          (tsup < 3'u32 and qsup > 3'u32 * tsup and treads > 3 * int(tsup)))
 
 proc slide_align*(q: Contig, t:Contig, min_overlap:int=50, max_mismatch:int=0, allowed:allowable_mismatch_fn=allowable_mismatch): Match =
@@ -58,7 +58,7 @@ proc slide_align*(q: Contig, t:Contig, min_overlap:int=50, max_mismatch:int=0, a
   var best_ma = min_overlap - 1
   var best_mm = max_mismatch + 1
   var best_correction: seq[correction_site]
-  var correction = new_seq[correction_site](1)
+  var correction = new_seq_of_cap[correction_site](4)
   var qo, to, mm, ma: int
   for o in 0..omax:
     if len(correction) != 0: correction.set_len(0)
@@ -185,13 +185,14 @@ proc insert*(m:Match, q:Contig) =
   #          qqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
   # tttttttttttttttttttttttttttttttt
   var original_len = t.len
-  if m.offset + q.len > t.len:
+  if (m.offset + q.len) > t.len:
     t.sequence.set_len(m.offset + q.len)
     t.support.set_len(m.offset + q.len)
 
-  for i in m.offset..<t.len:
-    var qoff = i - m.offset
+
+  for i in m.offset..<min(q.len + m.offset, t.len):
     if i in dont_overwrite: continue
+    var qoff = i - m.offset
     t.support[i] += q.support[qoff]
     if i >= original_len:
       t.sequence[i] = q.sequence[qoff]
@@ -254,7 +255,7 @@ when isMainModule:
 
   proc allow_test(qsup: uint32, tsup: uint32, qreads:int, treads:int): bool =
     ## default implementation to determine if we can overwrite a mismatch
-    return ((qsup < 3'u32 and tsup > 3'u32 * qsup) or 
+    return ((qsup < 3'u32 and tsup > 3'u32 * qsup) or
            (tsup < 3'u32 and qsup > 3'u32 * tsup))
 
   suite "contig":
@@ -336,7 +337,7 @@ when isMainModule:
       check t.start == 1
       #                     G      G  A  G  A  T  T  A  A  C  T  G  G  G  T  A  C  G  G  T  T  T  G  G  G  G
       check t.support ==  @[2'u32, 2, 2, 2, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 7]
-       
+
       t = make_contig(    "ATTAACTGGGTACGGTTTGGGG", 5, 2)
       q = make_contig("GGAGATTAACTGGGXACGGTTTGG", 0, 7)
       ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
@@ -390,3 +391,10 @@ when isMainModule:
 
       check t.support == @[7'u32, 7, 7, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 7]
 
+    test "insert with query contined in target":
+      var cc:seq[correction_site]
+      var tt = make_contig("CCGGGCTGGGCTT", 1, 2)
+      var qq = make_contig(   "GGCTGGGCT", 1, 2)
+      var match = (matches: 19, offset: 3, mismatches:0, corrections:cc, contig:tt)
+      match.insert(qq)
+      check tt.support == @[2'u32, 2, 2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 2]

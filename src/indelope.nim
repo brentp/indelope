@@ -110,7 +110,8 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
     for read in r.reads:
       max_stop = max(max_stop, read.stop)
 
-    var reference = fai.get(chrom, ctg.start, max_stop)
+    var width = int((K + 1) / 2 - 1)
+    var reference = fai.get(chrom, ctg.start, max_stop + width)
     ctg.sequence.align_to(reference, ez)
 
     var qlocs = toSeq(ez.query_locations())
@@ -118,16 +119,22 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
 
     for loc in ez.target_locations(ctg.start):
       if loc.len.int < min_event_len: continue
-      var ref_kmer = reference[(loc.start - ctg.start - (int((K + 1) / 2) - 1))..<(loc.start - ctg.start + int((K + 1) / 2))]
+      var rstart = max(0, loc.start - ctg.start - width)
+
+
+      # BUG: this can fail if we are at end of reference e.g. MT
+      var ref_kmer = reference[rstart..<(rstart + K)]
       var qloc = qlocs[ii]
       ii += 1
-      # TODO: check alt_kmer against squeakr database of known reference kmers slide along to find a unique one.
-      var qstart = qloc.start
 
-      var alt_kmer = ctg.sequence[(qloc.start - int((K + 1) / 2 - 1))..<(qloc.start + int((K + 1) / 2))]
-      if len(ref_kmer) != len(alt_kmer):
+      var qstart = max(qloc.start - width, 0)
+      if qstart + K >= ctg.len:
+        qstart = (ctg.len - K - 1)
+      var alt_kmer = ctg.sequence[qstart..<(qstart + K)]
+
+      if len(ref_kmer) != len(alt_kmer) or len(ref_kmer) != K:
         stderr.write_line("bug!!! kmer lengths should be equal, ref:" & $ref_kmer.len & " alt:" & $alt_kmer.len)
-        stderr.write_line("bug!!! qloc start:" & $qloc.start & " ctg len:" & $ctg.len & " genomic position:" & $loc.start )
+        stderr.write_line("bug!!! qloc start:" & $(loc.start - ctg.start - width) & " ctg len:" & $ctg.len & " genomic position:" & $chrom & ":" & $loc.start)
         #quit()
 
       var refe = ref_kmer.mincode()
@@ -189,7 +196,7 @@ iterator gen_roi_internal(evidence: seq[uint8], cache:seq[Record], min_evidence:
   var roi_start = 0
   var roi_end = 0
 
-  for i in cache_start..cache_end:
+  for i in cache_start..<cache_end:
     var ev = evidence[i]
     if ev >= min_evidence:
       if not in_roi:
@@ -228,7 +235,7 @@ iterator gen_roi(b:Bam, t:Target, min_event_support:uint8=4, min_read_coverage:i
   # array for any regions with >= min_event_support that indicate an event.
   # we yield the bounds of the event and the reads that overlapped it.
 
-  var evidence = new_seq[uint8](t.length)
+  var evidence = new_seq[uint8](t.length + 1)
   var cache = new_seq_of_cap[Record](100000)
   # we use last_start to make sure we dont keep iterating over the same chunk of evidence.
   var last_start = 0

@@ -9,3 +9,6 @@ assemble
 scrutinize
 tests/all
 tests/assemble_test
+src/contig
+src/indelope
+src/genotyper
