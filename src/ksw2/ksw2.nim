@@ -146,7 +146,7 @@ proc new_ez*(match:int8=1, mismatch:int8=(-2), gap_open:int8=3, gap_ext:int8=1):
             q:new_seq[uint8](1000),
             t:new_seq[uint8](1000))
 
-proc align_to*(query: var seq[uint8], target: var seq[uint8], ez:Ez, flag:cint=KSW_EZ_EXTZ_ONLY) {.inline.} =
+proc align_to*(query: var seq[uint8], target: var seq[uint8], ez:Ez, flag:cint=0) {.inline.} =
   ## align an encoded query to an encoded target.
   var bw = -1 # TODO
   var z = -1
@@ -155,7 +155,7 @@ proc align_to*(query: var seq[uint8], target: var seq[uint8], ez:Ez, flag:cint=K
                 5.int8, cast[ptr int8](ez.mat[0].addr),
                 ez.gap_open, ez.gap_ext, bw.cint, z.cint, flag, ez.c.addr)
 
-proc align_to*(query: string, target: string, ez:Ez, flag:cint=KSW_EZ_EXTZ_ONLY) {.inline.} =
+proc align_to*(query: string, target: string, ez:Ez, flag:cint=0) {.inline.} =
   ## align a query to a target with the parameters in ez
   ## the encoding is (re)done internally and re-uses memory to avoid allocations.
   query.encode(ez.q)

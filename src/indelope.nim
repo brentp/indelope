@@ -111,30 +111,32 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
       max_stop = max(max_stop, read.stop)
 
     var width = int((K + 1) / 2 - 1)
-    var reference = fai.get(chrom, ctg.start, max_stop + width)
+    var reference = fai.get(chrom, ctg.start, max_stop + K + 1)
     ctg.sequence.align_to(reference, ez)
 
     var qlocs = toSeq(ez.query_locations())
-    var ii = 0
+    var ii = -1
 
-    for loc in ez.target_locations(ctg.start):
-      if loc.len.int < min_event_len: continue
-      var rstart = max(0, loc.start - ctg.start - width)
-
-
-      # BUG: this can fail if we are at end of reference e.g. MT
-      var ref_kmer = reference[rstart..<(rstart + K)]
-      var qloc = qlocs[ii]
+    for tloc in ez.target_locations(ctg.start):
       ii += 1
+      if tloc.len.int < min_event_len: continue
+      var tstart = max(0, tloc.start - ctg.start - width)
+      if tstart + K > reference.len:
+        tstart = reference.len - K
+
+      var ref_kmer = reference[tstart..<(tstart + K)]
+      var qloc = qlocs[ii]
 
       var qstart = max(qloc.start - width, 0)
-      if qstart + K >= ctg.len:
-        qstart = (ctg.len - K - 1)
+      if qstart + K > ctg.len:
+        qstart = ctg.len - K
+
+      # TODO: actually make certain the kmer is contained within (and centered in) the sequence we are pulling
       var alt_kmer = ctg.sequence[qstart..<(qstart + K)]
 
       if len(ref_kmer) != len(alt_kmer) or len(ref_kmer) != K:
         stderr.write_line("bug!!! kmer lengths should be equal, ref:" & $ref_kmer.len & " alt:" & $alt_kmer.len)
-        stderr.write_line("bug!!! qloc start:" & $(loc.start - ctg.start - width) & " ctg len:" & $ctg.len & " genomic position:" & $chrom & ":" & $loc.start)
+        stderr.write_line("bug!!! tloc start:" & $(tloc.start - ctg.start - width) & " ctg len:" & $ctg.len & " genomic position:" & $chrom & ":" & $tloc.start)
         #quit()
 
       var refe = ref_kmer.mincode()
@@ -157,15 +159,24 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
 
       var gt = genotype(ref_support, alt_support, 1e-4)
       if gt.GT == GT.HOM_REF: continue
-      var v = Variant(chrom: chrom, start: loc.start, genotype: gt, ref_kmer: ref_kmer,
+      var v = Variant(chrom: chrom, start: tloc.start, genotype: gt, ref_kmer: ref_kmer,
                   alt_kmer: alt_kmer, AD: [ref_support, alt_support])
 
-      if loc.event_type == Deletion:
-        v.reference = fai.get(chrom, loc.start - 1, loc.stop - 1)
+      if tloc.event_type == Deletion:
+        v.reference = fai.get(chrom, tloc.start - 1, tloc.stop - 1)
         v.alternate = v.reference[0..<1]
       else:
-        v.alternate = ctg.sequence[(qloc.start - 1)..<(qloc.stop)]
-        v.reference = v.alternate[0..<1]
+        v.alternate = ctg.sequence[max(0, qloc.start - 1)..<(qloc.stop)]
+        if qloc.start != 0:
+          v.reference = v.alternate[0..<1]
+        else:
+          # if we started at 0, have to reach back 1 variant to anchor
+          # NOTE: that we might actually not have the full event here. should
+          # add a partial Flag or something similar to INFO.
+          v.reference = fai.get(chrom, tloc.start - 2, tloc.start - 1)
+          v.start = tloc.start - 1
+          v.alternate = v.reference[1] & v.alternate
+          v.reference = v.reference[0..<1]
       yield v
 
 iterator event_locations(r: Record): event {.inline.} =

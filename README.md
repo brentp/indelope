@@ -1,24 +1,62 @@
-## indelope: find medium sized indels with local realignment
+## indelope: find indels and SVs too small for structural variant callers and too large for GATK
 
-+ iterate through bam and note locations of
-  - discordant (by ISIZE)
-  - split reads (SA tag)
-  - > 1 cigar op
-+ extract all primary reads from union of locations into
-  fastq
+`indelope` was started with the goal of increasing the diagnostic rate in exomes. To do this it must be:
 
-+ assemble fastq with fermil into contigs
-+ align contig to genomic position to get coordinates
-+ align all reads from those coords to both contig and reference.
-  - get ref, alt counts.
++ fast : ~2.5 CPU-minutes per exome (25% slower than `samtools view -c`)
++ easy-to-use : goes from BAM to VCF in a single command.
++ novel : it does local assembly and then [aligns](https://github.com/lh3/ksw2) assembled contigs
+  to the genome to determine the event, and then does k-mer counting (not alignment) to genotype
+  without k-mer tables.
++ accurate : because of the genotyping method, we know that called variants are not present
+  in the reference.
 
-+ genotype based on ref and alt
-+ for non hom-ref translate back to ref coords (TODO)
+These features will help ensure that it is actually used (fast, easy-to-use) and that it finds new
+and valid variation.
 
+As of November 2017, `indelope` is working -- it finds large indels that are clearly valid by visual
+inspection that are missed by GATK/freebayes/lumpy. I am in the process of evaluating whether this
+truly increases the diagnostic rate and determining ways to increase the sensitivity.
 
-## TODO:
-0. set contig default to not insert if corrections is not empty. then in contigs.merge
-   that can be used.
+`indelope` also works on whole genomes, but, for now, that is not the target use-case.
 
-1. first merge reads looking at variant quality.
-2. merge and vote but keep separate anything where support for either is >= 5
+## how it works
+
+`indelope` sweeps over a single bam and finds regions that are likely to harbor indels--reads that have
+more than 1 cigar event and split-reads (work on split reads is in progress). As it finds these it increments
+a counter for the genomic position of the event. Upon finding a gap in coverage, it goes back, finds any
+previous position with sufficient evidence (this is a parameter) of an event, gathers reads that have been
+aligned across that genomic position (and unaligned reads from that region) and does assembly on those reads.
+It then aligns the assembled contigs to the genome using [ksw2](https://github.com/lh3/ksw2) and uses the CIGAR
+to determine the event as it's represented in the VCF. Any event will result in a novel k-mer not present in
+the reference genome; `indelope` gets the k-mer of the reference genome at the event and the novel k-mer of
+the alternate event. It again iterates through the reads that were originally aligned to the event and counts
+reference and alternate k-mers. Those counts are used for genotyping. Note that this reduces reference bias
+because we are aligning a contig (often >400 bases) to the genome and never re-aligning the actual reads.
+
+As `indelope` sweeps across the genome, it keeps the reads for each chunk in memory. A chunk bound is defined
+by a gap in coverage; this occurs frequently enough that the memory use is negligible. Once a new chunk is reached
+all events from the previous chunk are called and then those reads are discarded. This method, along with the
+assembly method make `indelope` extremely fast--given 2 BAM decompression threads, it can call variants in an
+exome in ~ 1 minute (2.5 CPU-minutes).
+
+## assembly
+
+A read (contig) slides along another read (contig) to find the offset with the most matches. At each offset, if
+more than $n mismatches are found, the next offset is attempted. This is efficient enough that a random read to
+a random (non-matching) contig of lenght $N will incur ~ 1.25 * $N equality (char var char) tests.
+
+Within each contig `indelope` tracks the number of reads supporting each base. Given a sufficient number of
+reads supporting a contig, it can account for sequencing errors with a simple voting scheme. That is: if contig a,
+position x has more than 7 supporting reads and contig b has fewer than 3 supporting reads (and we know that
+otherwise, `a` and `b` have no mismatches), we can vote to set the mismatch in `b` to the apparent match in `a`.
+This allows us to first create contigs allowing no mismatches within the reads and then to combine and extend contigs
+using this voting method.
+
+## see also
+
++ [svaba](https://github.com/walaj/svaba) does local assembly, but then genotypes by alignment to those
+  assemblies. It is slower than `indelope` but it is an extremely useful tool and has a series of
+  careful and insightful analyses in its paper. (highly recommend!!)
+
++ [rufus](https://github.com/jandrewrfarrell/RUFUS) does k-mer based variant detection; Andrew described
+  to me the RUFUS assembly method that inspired the one now used in `indelope`.
