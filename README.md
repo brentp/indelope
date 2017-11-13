@@ -52,6 +52,13 @@ otherwise, `a` and `b` have no mismatches), we can vote to set the mismatch in `
 This allows us to first create contigs allowing no mismatches within the reads and then to combine and extend contigs
 using this voting method.
 
+## to do
+
++ somatic mode / filter mode. allow filtering on a set of k-mers from a parental genome (parent for 
+  mendelian context or normal for somatic variation).
+
++ use SA tag. (and possibly discordant reads)
+
 ## see also
 
 + [svaba](https://github.com/walaj/svaba) does local assembly, but then genotypes by alignment to those
@@ -60,3 +67,8 @@ using this voting method.
 
 + [rufus](https://github.com/jandrewrfarrell/RUFUS) does k-mer based variant detection; Andrew described
   to me the RUFUS assembly method that inspired the one now used in `indelope`.
+
++ [lancet](https://github.com/nygenome/lancet), [scalpel](http://scalpel.sourceforge.net/),
+  [mate-clever](https://academic.oup.com/bioinformatics/article/29/24/3143/194997),  and [prosic2](https://github.com/prosic/prosic2) are all
+  great tools that are similar in spirit that are worth checking out (the latter 2 are focused on somatic variation).
+
