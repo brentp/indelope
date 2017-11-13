@@ -34,7 +34,7 @@ reference and alternate k-mers. Those counts are used for genotyping. Note that 
 because we are aligning a contig (often >400 bases) to the genome and never re-aligning the actual reads.
 
 As `indelope` sweeps across the genome, it keeps the reads for each chunk in memory. A chunk bound is defined
-by a gap in coverage; this occurs frequently enough that the memory use is negligible. Once a new chunk is reached
+by a gap in coverage; this occurs frequently enough that the memory use is negligible. Once a new chunk is reached,
 all events from the previous chunk are called and then those reads are discarded. This method, along with the
 assembly method make `indelope` extremely fast--given 2 BAM decompression threads, it can call variants in an
 exome in ~ 1 minute (2.5 CPU-minutes).
@@ -43,7 +43,7 @@ exome in ~ 1 minute (2.5 CPU-minutes).
 
 A read (contig) slides along another read (contig) to find the offset with the most matches. At each offset, if
 more than $n mismatches are found, the next offset is attempted. This is efficient enough that a random read to
-a random (non-matching) contig of lenght $N will incur ~ 1.25 * $N equality (char var char) tests.
+a random (non-matching) contig of length $N will incur ~ 1.25 * $N equality (char vs. char) tests.
 
 Within each contig `indelope` tracks the number of reads supporting each base. Given a sufficient number of
 reads supporting a contig, it can account for sequencing errors with a simple voting scheme. That is: if contig a,
