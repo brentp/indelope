@@ -1,4 +1,6 @@
 import algorithm
+import sequtils
+import math
 import sets
 
 type
@@ -16,7 +18,7 @@ type
   ## a Match is a putative match. corrections are sites that were mismatched, but that had low
   ## support in either target or query indicating that they could be overwritten.
   ## `contig` tracks the contig this match was for.
-  Match = tuple[matches: int, offset: int, mismatches: int, corrections:seq[correction_site], contig:Contig]
+  Match = tuple[matches: int, offset: int, mismatches: int, corrections:seq[correction_site], contig_i:int]
 
   ## a function that determines if a mismatch is "allowed" and not counted as a mismatch
   ## if this function returns true, the puported mismatch is corrected by a voting scheme.
@@ -44,7 +46,7 @@ proc allowable_mismatch(qsup: uint32, tsup: uint32, qreads:int, treads:int): boo
   return ((qsup < 3'u32 and tsup > 3'u32 * qsup and qreads > 3 * int(qsup)) or
          (tsup < 3'u32 and qsup > 3'u32 * tsup and treads > 3 * int(tsup)))
 
-proc slide_align*(q: Contig, t:Contig, min_overlap:int=50, max_mismatch:int=0, allowed:allowable_mismatch_fn=allowable_mismatch): Match =
+proc slide_align*(q:Contig, t:var Contig, min_overlap:int=50, max_mismatch:int=0, allowed:allowable_mismatch_fn=allowable_mismatch): Match =
   ## align (q)uery to (t)arget requiring a number of bases of overlap and fewer
   ## than the specified mismatches. If unaligned, the constant unaligned is returned.
   ## a negative value indicates that the query extends the target to the left.
@@ -115,7 +117,7 @@ proc slide_align*(q: Contig, t:Contig, min_overlap:int=50, max_mismatch:int=0, a
       obest = -o
       best_correction = correction
 
-  return (matches:best_ma, offset:obest, mismatches:best_mm, corrections:best_correction, contig:t)
+  return (matches:best_ma, offset:obest, mismatches:best_mm, corrections:best_correction, contig_i: -1)
 
 proc make_contig(dna: string, start:int, support:uint32=1): Contig =
   ## make a contig from a sequence string.
@@ -127,12 +129,12 @@ proc make_contig(dna: string, start:int, support:uint32=1): Contig =
   return o
 
 proc slide_align(q: string, t:string, qstart:int=0, tstart:int=0, min_overlap:int=50, max_mismatch:int=0, allowed:allowable_mismatch_fn=allowable_mismatch): Match =
-  return slide_align(make_contig(q, qstart), make_contig(t, qstart), min_overlap, max_mismatch, allowed=allowed)
+  var tc = make_contig(t, tstart)
+  return slide_align(make_contig(q, qstart), tc, min_overlap, max_mismatch, allowed=allowed)
 
-proc insert*(m:Match, q:Contig) =
+proc insert*(t:var Contig, q:var Contig, m:var Match) =
   ## insert a contig and perform error correction for sites that
   ## were calculated during the matching.
-  var t = m.contig
   if not m.aligned: return
   var dont_overwrite = initSet[int](2)
   for correction in m.corrections:
@@ -175,10 +177,10 @@ proc insert*(m:Match, q:Contig) =
     for i in abs(m.offset)..<q.len:
       if i in dont_overwrite: continue
       tsup[i] += q.support[i]
-    m.contig.sequence = tseq
-    m.contig.support = tsup
-    m.contig.nreads += q.nreads
-    m.contig.start = q.start
+    t.sequence = tseq
+    t.support = tsup
+    t.nreads += q.nreads
+    t.start = q.start
     return
 
   # off-set
@@ -196,16 +198,16 @@ proc insert*(m:Match, q:Contig) =
     t.support[i] += q.support[qoff]
     if i >= original_len:
       t.sequence[i] = q.sequence[qoff]
-  m.contig.nreads += q.nreads
+  t.nreads += q.nreads
 
 proc best_match(contigs: var seq[Contig], q:Contig, min_overlap:int=50, max_mismatch:int=0): Match =
   var matches = new_seq_of_cap[Match](2)
-  for c in contigs:
+  for i, c in contigs:
     if c == q: continue
     # q always first to slide_align
-    var ma = slide_align(q, c, min_overlap=min_overlap, max_mismatch=max_mismatch)
+    var ma = slide_align(q, contigs[i], min_overlap=min_overlap, max_mismatch=max_mismatch)
     if ma.aligned:
-      ma.contig = c
+      ma.contig_i = i
       matches.add(ma)
   # didn't find a good match so add it.
   if len(matches) == 0:
@@ -217,10 +219,10 @@ proc best_match(contigs: var seq[Contig], q:Contig, min_overlap:int=50, max_mism
   return matches[0]
 
 
-proc insert*(contigs: var seq[Contig], q:Contig, min_overlap:int=50, max_mismatch:int=0) =
+proc insert*(contigs: var seq[Contig], q:var Contig, min_overlap:int=50, max_mismatch:int=0) =
   var ma = contigs.best_match(q, min_overlap=min_overlap, max_mismatch=max_mismatch)
   if ma.aligned:
-    ma.insert(q)
+    contigs[ma.contig_i].insert(q, ma)
   else:
     contigs.add(q)
 
@@ -230,25 +232,21 @@ proc insert*(contigs: var seq[Contig], q:string, start:int, min_overlap:int=50, 
 
 proc combine*(contigs: var seq[Contig], max_mismatch:int=0): seq[Contig] =
   ## merge contigs. note that this modifies the contigs in-place.
-  contigs.sort(proc (a, b: Contig): int = return b.len - a.len)
-  var used = initSet[int]()
+  result = new_seq_of_cap[Contig](len(contigs))
+  result.add(contigs[0])
+  var bsum = sum(map(contigs, proc(a: Contig): int = return a.nreads))
 
-  for i in 0..contigs.high:
-    var ma = contigs.best_match(contigs[i], max_mismatch=max_mismatch)
+  for i in 1..contigs.high:
+    var used = false
+    var ma = result.best_match(contigs[i], max_mismatch=max_mismatch)
     if ma.aligned:
-      ma.insert(contigs[i])
-      used.incl(i)
-  if used.len == 0:
-    return contigs
+      result[ma.contig_i].insert(contigs[i], ma)
+    else:
+      result.add(contigs[i])
 
-  var k = 0
-  for i in 0..contigs.high:
-    if i in used: continue
-    contigs[k] = contigs[i]
-    k += 1
-  contigs = contigs[0..<k]
-  contigs.sort(proc (a, b: Contig): int = return b.len - a.len)
-  return contigs
+  if bsum != sum(map(result, proc(a: Contig): int = return a.nreads)):
+    stderr.write_line("[contig] error in combine didn't maintain same number of reads")
+    quit(2)
 
 when isMainModule:
   import unittest
@@ -313,12 +311,11 @@ when isMainModule:
 
     test "match sort":
       var c:seq[correction_site]
-      var co:Contig
-      var a:seq[Match] = @[(matches: 19, offset: 0, mismatches:0, corrections:c, contig:co),
-                           (matches: 20, offset: 0, mismatches:1, corrections:c, contig:co)]
+      var a:seq[Match] = @[(matches: 19, offset: 0, mismatches:0, corrections:c, contig_i:1),
+                           (matches: 20, offset: 0, mismatches:1, corrections:c, contig_i:1)]
       a.sort(match_sort)
       check a[0].matches == 20
-      a.add((matches:20, offset:0, mismatches:0, corrections:c, contig:co))
+      a.add((matches:20, offset:0, mismatches:0, corrections:c, contig_i:1))
       a.sort(match_sort)
       check a[0].matches == 20
       check a[0].mismatches == 0
@@ -330,7 +327,7 @@ when isMainModule:
 
       var ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
       check ma.aligned
-      ma.insert(q)
+      t.insert(q, ma)
       check t.sequence == "GGAGATTAACTGGGTACGGTTTGGGG"
       check 26 == t.sequence.len
       check 26 == t.support.len
@@ -342,7 +339,7 @@ when isMainModule:
       q = make_contig("GGAGATTAACTGGGXACGGTTTGG", 0, 7)
       ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
 
-      ma.insert(q)
+      t.insert(q, ma)
       check t.start == 0
       check ma.aligned
       check t.sequence == "GGAGATTAACTGGGXACGGTTTGGGG"
@@ -353,7 +350,7 @@ when isMainModule:
       q = make_contig("GGAGATTAACTGGGXACGGTTTGG", 0, 2)
       ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
       check ma.aligned
-      ma.insert(q)
+      t.insert(q, ma)
       check t.sequence == "GGAGATTAACTGGGTACGGTTTGG"
       check @[2'u32, 2, 2, 2, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 9, 9, 2, 2, 2, 2, 2, 2, 2] == t.support
       check t.start == 0
@@ -363,7 +360,7 @@ when isMainModule:
       var q = make_contig(    "ATTAACTGGGTACGGTTTGGGG", 3, 7)
       var ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
       check ma.aligned
-      ma.insert(q)
+      t.insert(q, ma)
       check t.start == 1
       #                    G      G  A  G  A  T  T  A  A  C  T  G  G  G  T  A  C  G  G  T  T  T  G  G  G  G
       check t.support == @[2'u32, 2, 2, 2, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 7]
@@ -375,7 +372,7 @@ when isMainModule:
       ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
       check ma.offset == 0
       check ma.aligned
-      ma.insert(q)
+      t.insert(q, ma)
       check t.start == 90
       check t.sequence.len == 26
       check t.sequence == "GGAGATTAACTGGGXACGGTTTGGGG"
@@ -384,7 +381,7 @@ when isMainModule:
       q = make_contig("AAAGGAGATTAACTGGGTACGGTTTGGGG", 3, 7)
       ma = q.slide_align(t, min_overlap=5, allowed=allow_test)
       check ma.offset == -3
-      ma.insert(q)
+      t.insert(q, ma)
       check t.sequence.len == q.sequence.len
       check t.sequence == "AAAGGAGATTAACTGGGTACGGTTTGGGG"
       check t.start == 3
@@ -395,6 +392,6 @@ when isMainModule:
       var cc:seq[correction_site]
       var tt = make_contig("CCGGGCTGGGCTT", 1, 2)
       var qq = make_contig(   "GGCTGGGCT", 1, 2)
-      var match = (matches: 19, offset: 3, mismatches:0, corrections:cc, contig:tt)
-      match.insert(qq)
+      var match = (matches: 19, offset: 3, mismatches:0, corrections:cc, contig_i:1)
+      tt.insert(qq, match)
       check tt.support == @[2'u32, 2, 2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 2]
