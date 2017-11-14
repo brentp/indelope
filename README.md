@@ -52,6 +52,17 @@ otherwise, `a` and `b` have no mismatches), we can vote to set the mismatch in `
 This allows us to first create contigs allowing no mismatches within the reads and then to combine and extend contigs
 using this voting method.
 
+## installation and usage
+
+get a binary from [here](https://github.com/brentp/indelope/releases)
+and make sure that libhts.so is in your `LD_LIBRARY_PATH`
+
+then run `./indelope -h` for usage. recommended is:
+
+```
+indelope --min-event-len 5 --min-reads 5 $fasta $bam > $vcf
+```
+
 ## to do
 
 + somatic mode / filter mode. allow filtering on a set of k-mers from a parental genome (parent for 
