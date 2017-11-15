@@ -89,33 +89,43 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
 
   var contigs = new_seq[Contig]()
   var read_seq = ""
+  var base_q = new_seq[uint8](20)
   # assemble the alt contig
   for read in r.reads:
     if read.skippable(allow_unmapped=true): continue
-    contigs.insert(read.sequence(read_seq), read.start)
-  var ucontigs = new_seq_of_cap[Contig](contigs.len)
+    discard read.sequence(read_seq)
+    discard read.base_qualities(base_q)
+    trim(read_seq, base_q)
+    contigs.insert(read_seq, read.start, min_overlap=int(0.88 * float64(read_seq.len)))
 
-  for c in contigs:
-    if c.nreads < min_reads or c.len < min_ctg_len: continue
-    ucontigs.add(c)
-  contigs = ucontigs
-
+  contigs = contigs.combine()
   var sequence = ""
-  var ss = ""
   var chrom = r.reads[0].chrom
 
   for ctg in contigs:
+    #echo "ctg:", ctg.len, " ", ctg.nreads
+    if ctg.nreads < min_reads or ctg.len < min_ctg_len: continue
 
     var max_stop = ctg.start
     for read in r.reads:
       max_stop = max(max_stop, read.stop)
 
     var width = int((K + 1) / 2 - 1)
+    # TODO: for an SV, for the alignment, we need both ends.
     var reference = fai.get(chrom, ctg.start, max_stop + K + 1)
     ctg.sequence.align_to(reference, ez)
+    #[
+    echo "roi:", r.start, "-", r.stop
+    echo ctg.start, " ", ctg.start + ctg.len
+    echo ez.cigar_string(read_seq, full=true)
+    echo ez.draw(ctg.sequence, reference)
+    ]#
+
 
     var qlocs = toSeq(ez.query_locations())
     var ii = -1
+    #echo "qlocs:", qlocs
+    #echo "tlocs:", toSeq(ez.target_locations(ctg.start))
 
     for tloc in ez.target_locations(ctg.start):
       ii += 1
@@ -148,7 +158,7 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
       for read in r.reads:
         var ref_found = false
         var alt_found = false
-        for e in read.sequence(ss).slide(K):
+        for e in read.sequence(read_seq).slide(K):
             if e == refe: ref_support += 1; ref_found = true
             if e == alte: alt_support += 1; alt_found = true
         if ref_found and alt_found:
@@ -166,20 +176,12 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
         v.reference = fai.get(chrom, tloc.start - 1, tloc.stop - 1)
         v.alternate = v.reference[0..<1]
       else:
-        v.alternate = ctg.sequence[max(0, qloc.start - 1)..<(qloc.stop)]
-        if qloc.start != 0:
-          v.reference = v.alternate[0..<1]
-        else:
-          # if we started at 0, have to reach back 1 variant to anchor
-          # NOTE: that we might actually not have the full event here. should
-          # add a partial Flag or something similar to INFO.
-          v.reference = fai.get(chrom, tloc.start - 2, tloc.start - 1)
-          v.start = tloc.start - 1
-          v.alternate = v.reference[1] & v.alternate
-          v.reference = v.reference[0..<1]
+        v.reference = fai.get(chrom, tloc.start - 1, tloc.start - 1)
+        v.alternate = ctg.sequence[(qloc.start-1)..<qloc.stop]
+        v.start = tloc.start
       yield v
 
-iterator event_locations(r: Record): event {.inline.} =
+iterator event_locations(r: Record, max_tags:int=1): event {.inline.} =
   ## the genomic start-end of the location of the event
   ## TODO: SA tags
   var off: int
@@ -192,6 +194,11 @@ iterator event_locations(r: Record): event {.inline.} =
         yield (r.start + off, r.start + off + 1, c.len)
     if cons:
       off += c.len
+  #var tags = r.aux("SA")
+  #if tags != nil and tags.count(';') <= max_tags:
+  #  tags = tags[0..<tags.high] # strip(';')
+  #  for tag in tags:
+
 
 proc overlaps(r: Record, start:int, stop:int): bool {.inline.} =
   if r.start > stop: return false
@@ -251,6 +258,7 @@ iterator gen_roi(b:Bam, t:Target, min_event_support:uint8=4, min_read_coverage:i
   # we use last_start to make sure we dont keep iterating over the same chunk of evidence.
   var last_start = 0
 
+  #for r in b.querys("1:120381680-120381697"):
   for r in b.querys(t.name):
     if r.skippable: continue
     if cache.len > 0 and r.start > cache[cache.high].stop:
