@@ -46,6 +46,26 @@ proc allowable_mismatch(qsup: uint32, tsup: uint32, qreads:int, treads:int): boo
   return ((qsup < 3'u32 and tsup > 3'u32 * qsup and qreads > 3 * int(qsup)) or
          (tsup < 3'u32 and qsup > 3'u32 * tsup and treads > 3 * int(tsup)))
 
+proc trim*(c:Contig, min_support:int=2) =
+  ## trim bases in a contig that do not have at least `min_support`
+  var a = 0
+  while a < c.len - 1 and c.support[a] < uint32(min_support):
+    a += 1
+
+  if a >= c.len - 1:
+    c.sequence.set_len(0)
+    c.support.set_len(0)
+    c.nreads = 0
+    return
+
+  var b = c.len - 1
+  while c.support[b] < uint32(min_support) and b > a:
+    b -= 1
+
+  if a > 0 or b <= c.len - 1:
+    c.support = c.support[a..b]
+    c.sequence = c.sequence[a..b]
+
 proc slide_align*(q:Contig, t:var Contig, min_overlap:int=50, max_mismatch:int=0, allowed:allowable_mismatch_fn=allowable_mismatch): Match =
   ## align (q)uery to (t)arget requiring a number of bases of overlap and fewer
   ## than the specified mismatches. If unaligned, the constant unaligned is returned.
@@ -200,7 +220,7 @@ proc insert*(t:var Contig, q:var Contig, m:var Match) =
       t.sequence[i] = q.sequence[qoff]
   t.nreads += q.nreads
 
-proc best_match(contigs: var seq[Contig], q:Contig, min_overlap:int=50, max_mismatch:int=0): Match =
+proc best_match(contigs: var seq[Contig], q:Contig, min_overlap:int=70, max_mismatch:int=0): Match =
   var matches = new_seq_of_cap[Match](2)
   for i, c in contigs:
     if c == q: continue
@@ -232,6 +252,8 @@ proc insert*(contigs: var seq[Contig], q:string, start:int, min_overlap:int=50, 
 
 proc combine*(contigs: var seq[Contig], max_mismatch:int=0): seq[Contig] =
   ## merge contigs. note that this modifies the contigs in-place.
+  for c in contigs:
+    c.trim(min_support=3)
   result = new_seq_of_cap[Contig](len(contigs))
   result.add(contigs[0])
   var bsum = sum(map(contigs, proc(a: Contig): int = return a.nreads))

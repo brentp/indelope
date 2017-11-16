@@ -137,7 +137,7 @@ proc matrix*(match:int8=1, mismatch:int8=(-2)): seq[int8] =
            mismatch, mismatch, mismatch,    match, 0,
            0,        0,        0,           0,     0]
 
-proc new_ez*(match:int8=1, mismatch:int8=(-2), gap_open:int8=3, gap_ext:int8=1): Ez =
+proc new_ez*(match:int8=1, mismatch:int8=(-2), gap_open:int8=4, gap_ext:int8=1): Ez =
   var cez = ksw_extz_t()
   var mm = mismatch
   if mm > 0: mm = -mm
