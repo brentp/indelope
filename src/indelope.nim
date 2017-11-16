@@ -239,7 +239,6 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
         v.info_add("ZO")
       if both_found > 0:
         v.info_add("BS=" & $both_found)
-        v.info_add("MF=" & $qloc.get_min_flank(ez))
       v.info_add("CC=" & ez.cigar_string(read_seq))
       v.info_add("MF=" & $qloc.get_min_flank(ez))
       if tloc.event_type == Deletion:
@@ -285,8 +284,7 @@ proc single_roi(b:Bam, region:string): roi =
 iterator gen_roi_internal(evidence: seq[uint8], cache:seq[Record], min_evidence:uint8, min_reads:int, max_reads:int, cache_start:int, cache_end:int): roi {.inline.} =
   ## given the counts in evidence and a region to look in (cache_start .. cache_end)
   ## yield regions where the values in evidence are >= min_evidence along with reads from that region.
-  ## futher filter to those regions that have > min_reads that overlap the putative event
-  ## TODO: filter out high-coverage regions with, e.g. 4 supporting reads out of 1000.
+  ## further filter to those regions that have > min_reads that overlap the putative event
   var in_roi = false
   var roi_start = 0
   var roi_end = 0
@@ -323,6 +321,19 @@ iterator gen_roi_internal(evidence: seq[uint8], cache:seq[Record], min_evidence:
     if len(reads) >= min_reads and len(reads) <= max_reads:
       yield (roi_start, roi_end, reads)
 
+# store the max stop we've seen.
+type cache_t = tuple[records: seq[Record], stop:int]
+
+proc add(c:var cache_t, r:Record) =
+  c.stop = max(c.stop, r.stop)
+  c.records.add(r)
+
+proc clear(c:var cache_t) =
+  c.records.set_len(0)
+  c.stop = 0
+
+proc len(c:cache_t): int {.inline.} =
+    return c.records.len
 
 iterator gen_roi(b:Bam, t:Target, min_event_support:uint8=4, min_read_coverage:int=4, max_read_coverage:int=200): roi =
   # we iterate over the bam an increment an evidence counter in an genomic array for positions
@@ -332,21 +343,20 @@ iterator gen_roi(b:Bam, t:Target, min_event_support:uint8=4, min_read_coverage:i
   # we yield the bounds of the event and the reads that overlapped it.
 
   var evidence = new_seq[uint8](t.length + 1)
-  var cache = new_seq_of_cap[Record](100000)
+  var cache: cache_t = (new_seq_of_cap[Record](100000), 0)
   # we use last_start to make sure we dont keep iterating over the same chunk of evidence.
   var last_start = 0
 
-  #for r in b.querys("1:120381680-120381697"):
-
   for r in b.querys(t.name):
-    if r.skippable: continue
-    if cache.len > 0 and r.start > cache[cache.high].stop:
-      for roi in gen_roi_internal(evidence, cache, min_event_support, min_read_coverage, max_read_coverage, last_start, r.start):
+    #echo "r.start:", r.start
+    if cache.len > 0 and r.start > cache.stop:
+      for roi in gen_roi_internal(evidence, cache.records, min_event_support, min_read_coverage, max_read_coverage, last_start, r.start):
         yield roi
       # reset
-      last_start = r.start
-      cache.set_len(0)
+      last_start = int(r.start)
+      cache.clear()
 
+    if r.skippable: continue
     cache.add(r.copy())
     for e in r.event_locations:
       for i in e.start..<e.stop:
@@ -354,7 +364,7 @@ iterator gen_roi(b:Bam, t:Target, min_event_support:uint8=4, min_read_coverage:i
         # reset after avoid overflow
         if evidence[i] == 0:
           evidence[i] = 255
-  for roi in gen_roi_internal(evidence, cache, min_event_support, min_read_coverage, max_read_coverage, last_start, evidence.len):
+  for roi in gen_roi_internal(evidence, cache.records, min_event_support, min_read_coverage, max_read_coverage, last_start, evidence.len):
     yield roi
 
 ## make proper vcf header.
@@ -411,8 +421,6 @@ Options:
   echo header % [b.contig_header, "sample"]
   for target in targets:
     for r in gen_roi(b, target, min_read_coverage=min_reads, min_event_support=max(3, min_reads-2).uint8):
-      if 90286639 > r.start and 90286636 < r.stop:
-        stderr.write_line($r & "in:" &  target.name)
       for v in callsemble(r, fai, ez, min_ctg_len=min_ctg_len, min_reads=min_reads, min_event_len=min_event_len):
         if v.same(last_var): continue
         echo v
