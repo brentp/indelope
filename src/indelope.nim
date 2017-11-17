@@ -1,6 +1,7 @@
 import osproc
 import contig
 import sequtils
+import strutils
 import sets
 import os
 import times
@@ -48,6 +49,7 @@ type
     chrom*: string
     start*: int
     filter*: string
+    qual*: float64
     reference*: string
     alternate*: string
     genotype*: Genotype
@@ -79,8 +81,11 @@ const header = """##fileformat=VCFv4.2
 ##INFO=<ID=DP,Number=1,Type=Integer,Description="supporting k-mer depth">
 ##INFO=<ID=BS,Number=1,Type=Integer,Description="number of times there was support for both ref and alt k-mer in a single read">
 ##INFO=<ID=MF,Number=1,Type=Integer,Description="minimum matching bases around this event when BS > 0. Higher gives more confidence">
+##INFO=<ID=CF,Number=1,Type=Integer,Description="minimum flank of the event from either end of the contig. higher is better.">
 ##INFO=<ID=CC,Number=1,Type=String,Description="contig cigar from alignment to reference">
-##INFO=<ID=ZO,Number=0,Type=Flag,Description="zero-offset: the k-mer occured at the start of the contig so we may not have the full variant">
+##INFO=<ID=LO,Number=0,Type=Flag,Description="low-offset: the event occurred near at the start of the contig so we may not have the full variant">
+##INFO=<ID=AKE,Number=1,Type=Float,Description="mean alt-kmer distance from end of read">
+##INFO=<ID=RKE,Number=1,Type=Float,Description="mean ref-kmer distance from end of read">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="supporting k-mer depth">
 ##FORMAT=<ID=GQ,Number=1,Type=Float,Description="Genotype Quality">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
@@ -98,15 +103,16 @@ proc `$`*(v:Variant): string =
   return format("$chrom\t$pos\t$id\t$ref\t$alt\t$qual\t$filter\t$info\tGT:GQ:GL\t$gt" %
                 ["chrom", v.chrom, "pos", $v.start, "id", ".",
                  "ref", v.reference, "alt", v.alternate,
-                 "qual", formatFloat(v.genotype.qual, precision=2, format=ffDecimal),
+                 "qual", formatFloat(v.qual, precision=2, format=ffDecimal),
                  "filter", filter, "info", v.info(), "gt", $(v.genotype)])
 
 proc same(a:Variant, b:Variant): bool =
   if a == nil or b == nil: return false
   return (a.start == b.start) and (a.chrom == b.chrom) and (a.reference == b.reference) and (a.alternate == b.alternate)
 
+const init_len = 100000000
 proc get_min_flank(e:ksw2.event, ez:Ez): int =
-  result = 1000000000
+  result = init_len
   var found_event = false
   for c in ez.cigar:
     if c.op == 0:
@@ -116,10 +122,17 @@ proc get_min_flank(e:ksw2.event, ez:Ez): int =
         result = c.length.int
       if found_event: return
     elif c.op != 0 and int(c.op) - 1 == int(e.event_type) and c.length.int == e.len.int:
+      if init_len == result: result = 0
       found_event = true
   return 0
 
-iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=4, min_event_len:int=4, K:int=25): Variant =
+proc mean(a:seq[int]): float64 =
+    result = 0'f64
+    for v in a:
+        result += v.float64
+    return result / float64(a.len)
+
+iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=4, min_event_len:int=4, K:int=27): Variant =
 
   var contigs = new_seq[Contig]()
   var read_seq = ""
@@ -137,7 +150,6 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
   var chrom = r.reads[0].chrom
 
   for ctg in contigs:
-    #echo "ctg:", ctg.len, " ", ctg.nreads
     if ctg.nreads < min_reads or ctg.len < min_ctg_len: continue
 
     var max_stop = ctg.start
@@ -148,17 +160,24 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
     # TODO: for an SV, for the alignment, we need both ends.
     var reference = fai.get(chrom, ctg.start, max_stop + K + 1)
     ctg.sequence.align_to(reference, ez)
+    when defined(debug):
+      echo ez.cigar_string(read_seq)
+
     #[
+    discard ez.cigar_string(read_seq, full=true)
     echo "roi:", r.start, "-", r.stop
-    echo ctg.start, " ", ctg.start + ctg.len
-    echo ez.cigar_string(read_seq, full=true)
-    echo ez.cigar_string(read_seq)
+    echo "ctg range:", ctg.start, " ", ctg.start + ctg.len
+    echo "full:", read_seq
+    echo "part:", ez.cigar_string(read_seq, full=true)
     echo ez.draw(ctg.sequence, reference)
     ]#
 
-
     var qlocs = toSeq(ez.query_locations())
+    if len(qlocs) == 0 or len(qlocs) > 3 or (qlocs[0].start != 0 and len(qlocs) > 2): continue
+    ## TODO: revisit this.
+    if len(qlocs) == 1 and qlocs[0].start == 0 and qlocs[0].event_type == Deletion and qlocs[0].len < 10: continue
     var ii = -1
+
     #echo "qlocs:", qlocs
     #echo "tlocs:", toSeq(ez.target_locations(ctg.start))
 
@@ -172,7 +191,8 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
       var ref_kmer = reference[tstart..<(tstart + K)]
       var qloc = qlocs[ii]
 
-      var zero_offset = qloc.start < 2 or qloc.stop + 2 > ctg.len
+      var low_offset = qloc.start < 5 or qloc.stop + 6 > ctg.len
+      var offset = min(qloc.start, ctg.len - qloc.stop - 1)
       var qstart = max(qloc.start - width, 0)
       if qstart + K > ctg.len:
         qstart = ctg.len - K
@@ -197,6 +217,8 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
         else:
           alt_kmer = ctg.sequence[qstart..<(qstart + K)]
       if ref_kmer == alt_kmer and (qloc.start == 0 or alt_kmer.toSet.len == 1): continue
+      # simple repeats are hard so require at least 2 unique bases.
+      if ref_kmer.toSet.len < 3: continue
 
       if ref_kmer == alt_kmer:
         stderr.write_line("bug!!! ref and alt kmers are same!! chrom:" & chrom & " " & $qloc & " alt:" & $tloc)
@@ -217,30 +239,54 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
       var alte = alt_kmer.mincode()
       var alt_support = 0
       var ref_support = 0
+      var adists = new_seq_of_cap[int](len(r.reads))
+      var rdists = new_seq_of_cap[int](len(r.reads))
 
       var both_found = 0
       for read in r.reads:
+        #var e2 = new_ez()
+        #discard read.sequence(read_seq)
+        #read_seq.align_to(reference, e2)
+        #echo toSeq(items(read.cigar)), ".. ", e2.cigar_string(read_seq)
         var ref_found = false
         var alt_found = false
-        for e in read.sequence(read_seq).slide(K):
-            if e == refe: ref_support += 1; ref_found = true
-            if e == alte: alt_support += 1; alt_found = true
+        for d, e in read.sequence(read_seq).dists(K):
+            if not ref_found and e == refe:
+                ref_support += 1; ref_found = true
+                rdists.add(d)
+
+            if not alt_found and e == alte:
+                alt_support += 1; alt_found = true
+                adists.add(d)
         if ref_found and alt_found:
             both_found += 1
 
       if alt_support < min_reads: continue
-      if float64(alt_support) / float64(alt_support + ref_support) < 0.05: continue
+      if float64(alt_support) / float64(alt_support + ref_support) < 0.1: continue
 
       var gt = genotype(ref_support, alt_support, 1e-3)
       if gt.GT == GT.HOM_REF: continue
       var v = Variant(chrom: chrom, start: tloc.start, genotype: gt, ref_kmer: ref_kmer,
-                  alt_kmer: alt_kmer, AD: [ref_support, alt_support])
-      if zero_offset:
-        v.info_add("ZO")
+                  qual: gt.qual, alt_kmer: alt_kmer, AD: [ref_support, alt_support])
+      # this line works extremeley well to remove false positives with no loss of sensitivity.
+      if offset == 0 and both_found >= int(0.75 * float64(min(ref_support, alt_support))): continue
+
+      if low_offset:
+        v.info_add("LO")
+        v.qual /= 2'f64
       if both_found > 0:
         v.info_add("BS=" & $both_found)
+        v.qual /= max(2'f64, float64(both_found) / 3'f64)
+      else:
+        v.qual *= 2
       v.info_add("CC=" & ez.cigar_string(read_seq))
       v.info_add("MF=" & $qloc.get_min_flank(ez))
+      v.info_add("CF=" & $offset)
+      if offset == 0:
+          v.qual /= 4'f64
+      v.info_add("AKE=" &  formatFloat(mean(adists), precision=2, format=ffDecimal))
+      v.info_add("RKE=" &  formatFloat(mean(rdists), precision=2, format=ffDecimal))
+      if mean(adists) < 5: continue
       if tloc.event_type == Deletion:
         v.reference = fai.get(chrom, tloc.start - 1, tloc.stop - 1)
         v.alternate = v.reference[0..<1]
@@ -248,6 +294,10 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
         v.reference = fai.get(chrom, tloc.start - 1, tloc.start - 1)
         v.alternate = ctg.sequence[(qloc.start-1)..<qloc.stop]
         v.start = tloc.start
+        var vset = v.alternate[1..v.alternate.high].toSet
+        if vset.len == 1 and alt_kmer[alt_kmer.high-10..alt_kmer.high].toSet.len == 1 and 
+            ref_kmer[ref_kmer.high-10..ref_kmer.high].toSet.len == 1:
+          continue
       yield v
 
 iterator event_locations(r: Record, max_tags:int=1): event {.inline.} =

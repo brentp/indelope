@@ -51,6 +51,7 @@ proc trim*(c:Contig, min_support:int=2) =
   var a = 0
   while a < c.len - 1 and c.support[a] < uint32(min_support):
     a += 1
+  c.start += a
 
   if a >= c.len - 1:
     c.sequence.set_len(0)
@@ -252,23 +253,29 @@ proc insert*(contigs: var seq[Contig], q:string, start:int, min_overlap:int=50, 
 
 proc combine*(contigs: var seq[Contig], max_mismatch:int=0): seq[Contig] =
   ## merge contigs. note that this modifies the contigs in-place.
-  for c in contigs:
-    c.trim(min_support=3)
   result = new_seq_of_cap[Contig](len(contigs))
-  result.add(contigs[0])
-  var bsum = sum(map(contigs, proc(a: Contig): int = return a.nreads))
+  var usedi = 0
+  for i, c in contigs:
+    c.trim(min_support=3)
+    # the contig might be trimmed down to nothing so we take the first one that has some reads
+    if c.nreads > 0 and result.len == 0:
+      result.add(c)
+      usedi = i
+  if result.len == 0: return
+  #var bsum = sum(map(contigs, proc(a: Contig): int = return a.nreads))
 
-  for i in 1..contigs.high:
+  for i in 0..contigs.high:
+    if i == usedi: continue
     var used = false
     var ma = result.best_match(contigs[i], max_mismatch=max_mismatch)
     if ma.aligned:
       result[ma.contig_i].insert(contigs[i], ma)
-    else:
+    elif contigs[i].nreads > 0:
       result.add(contigs[i])
 
-  if bsum != sum(map(result, proc(a: Contig): int = return a.nreads)):
-    stderr.write_line("[contig] error in combine didn't maintain same number of reads")
-    quit(2)
+  #if bsum != sum(map(result, proc(a: Contig): int = return a.nreads)):
+  #  stderr.write_line("[contig] error in combine didn't maintain same number of reads")
+  #  quit(2)
 
 when isMainModule:
   import unittest
