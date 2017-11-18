@@ -221,7 +221,7 @@ proc insert*(t:var Contig, q:var Contig, m:var Match) =
       t.sequence[i] = q.sequence[qoff]
   t.nreads += q.nreads
 
-proc best_match(contigs: var seq[Contig], q:Contig, min_overlap:int=70, max_mismatch:int=0): Match =
+proc best_match(contigs: var seq[Contig], q:Contig, min_overlap:int=65, max_mismatch:int=0): Match =
   var matches = new_seq_of_cap[Match](2)
   for i, c in contigs:
     if c == q: continue
@@ -251,12 +251,12 @@ proc insert*(contigs: var seq[Contig], q:string, start:int, min_overlap:int=50, 
   var qc = make_contig(q, start)
   contigs.insert(qc, min_overlap=min_overlap, max_mismatch=max_mismatch)
 
-proc combine*(contigs: var seq[Contig], max_mismatch:int=0): seq[Contig] =
+proc combine*(contigs: var seq[Contig], max_mismatch:int=0, min_support:int=3): seq[Contig] =
   ## merge contigs. note that this modifies the contigs in-place.
   result = new_seq_of_cap[Contig](len(contigs))
   var usedi = 0
   for i, c in contigs:
-    c.trim(min_support=3)
+    c.trim(min_support=min_support)
     # the contig might be trimmed down to nothing so we take the first one that has some reads
     if c.nreads > 0 and result.len == 0:
       result.add(c)

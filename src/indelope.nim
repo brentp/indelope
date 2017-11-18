@@ -82,6 +82,7 @@ const header = """##fileformat=VCFv4.2
 ##INFO=<ID=BS,Number=1,Type=Integer,Description="number of times there was support for both ref and alt k-mer in a single read">
 ##INFO=<ID=MF,Number=1,Type=Integer,Description="minimum matching bases around this event when BS > 0. Higher gives more confidence">
 ##INFO=<ID=CF,Number=1,Type=Integer,Description="minimum flank of the event from either end of the contig. higher is better.">
+##INFO=<ID=NC,Number=1,Type=Integer,Description="number of contigs at the site of this variant.">
 ##INFO=<ID=CC,Number=1,Type=String,Description="contig cigar from alignment to reference">
 ##INFO=<ID=LO,Number=0,Type=Flag,Description="low-offset: the event occurred near at the start of the contig so we may not have the full variant">
 ##INFO=<ID=AKE,Number=1,Type=Float,Description="mean alt-kmer distance from end of read">
@@ -145,11 +146,17 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
     trim(read_seq, base_q)
     contigs.insert(read_seq, read.start, min_overlap=int(0.88 * float64(read_seq.len)))
 
+  var n_contigs = len(contigs)
+  when not defined(release):
+    echo "n contigs:", n_contigs
   contigs = contigs.combine()
+  var n_contigs_a = len(contigs)
   var sequence = ""
   var chrom = r.reads[0].chrom
 
   for ctg in contigs:
+    if n_contigs > 20: continue
+    #echo "ctg:", ctg.nreads, " len:", ctg.len
     if ctg.nreads < min_reads or ctg.len < min_ctg_len: continue
 
     var max_stop = ctg.start
@@ -160,7 +167,7 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
     # TODO: for an SV, for the alignment, we need both ends.
     var reference = fai.get(chrom, ctg.start, max_stop + K + 1)
     ctg.sequence.align_to(reference, ez)
-    when defined(debug):
+    when not defined(release):
       echo ez.cigar_string(read_seq)
 
     #[
@@ -276,12 +283,16 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
         v.qual /= 2'f64
       if both_found > 0:
         v.info_add("BS=" & $both_found)
-        v.qual /= max(2'f64, float64(both_found) / 3'f64)
+        v.qual /= 1.5
       else:
         v.qual *= 2
       v.info_add("CC=" & ez.cigar_string(read_seq))
-      v.info_add("MF=" & $qloc.get_min_flank(ez))
+      var min_flank = qloc.get_min_flank(ez)
+      # if we have a big event and a small flank, bail
+      if (min_flank - 1) < max(tloc.stop - tloc.start, qloc.stop - qloc.start): continue
+      v.info_add("MF=" & $min_flank)
       v.info_add("CF=" & $offset)
+      v.info_add("NC=" & $n_contigs_a)
       if offset == 0:
           v.qual /= 4'f64
       v.info_add("AKE=" &  formatFloat(mean(adists), precision=2, format=ffDecimal))
@@ -453,6 +464,7 @@ Options:
     open(b, commandLineParams()[3], index=true)
     var fai = open_fai(commandLineParams()[2])
     var r = single_roi(b, commandLineParams()[1])
+    echo "got ", len(r.reads), " reads"
     for v in callsemble(r, fai, ez, min_event_len=4):
       echo v
     quit(0)

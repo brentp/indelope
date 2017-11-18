@@ -83,3 +83,17 @@ indelope --min-event-len 5 --min-reads 5 $fasta $bam > $vcf
   [mate-clever](https://academic.oup.com/bioinformatics/article/29/24/3143/194997),  and [prosic2](https://github.com/prosic/prosic2) are all
   great tools that are similar in spirit that are worth checking out (the latter 2 are focused on somatic variation).
 
+
+## notes and TODO
+
+# need a better way to combine contigs
+
+sometimes, can have 2 contigs, each of length ~ 80 and they overlap for 60 bases but cutoff is
+e.g. 65. Need a way to recover this as it happens a lot in low-coverage scenarios. maybe it can
+first combine, then trim (currently, it's trim, combine).
+This should also allow more permissive overlaps if the correction list is empty.
+
+# contigs
+
+`min_overlap` in contig::best_match should be a float between 0 and 1 that will make sure that at least
+that portion of the shortest contig overlaps the other.
