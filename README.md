@@ -14,8 +14,14 @@ These features will help ensure that it is actually used (fast, easy-to-use) and
 and valid variation.
 
 As of November 2017, `indelope` is working -- it finds large indels that are clearly valid by visual
-inspection that are missed by GATK/freebayes/lumpy. I am in the process of evaluating whether this
-truly increases the diagnostic rate and determining ways to increase the sensitivity.
+inspection that are missed by GATK/freebayes/lumpy.
+
+As of November 2017, I am still tuning. Here is a look at the progress:
+
+![image](https://user-images.githubusercontent.com/1739/33039303-c5ebb54c-cdf4-11e7-88be-bc3736bcdd25.png)
+
+Note that while `indelope` is steadily improving, it still is not as good as `scalpel`. More improvements
+are coming soon.
 
 `indelope` also works on whole genomes, but, for now, that is not the target use-case.
 
