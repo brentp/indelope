@@ -251,18 +251,25 @@ proc insert*(contigs: var seq[Contig], q:string, start:int, min_overlap:int=50, 
   var qc = make_contig(q, start)
   contigs.insert(qc, min_overlap=min_overlap, max_mismatch=max_mismatch)
 
-proc combine*(contigs: var seq[Contig], max_mismatch:int=0, min_support:int=3): seq[Contig] =
+proc combine*(contigs: var seq[Contig], max_mismatch:int=0, min_support:int=3, again:bool=true): seq[Contig] =
   ## merge contigs. note that this modifies the contigs in-place.
+  ## again is only internal and should not be changed by the user.
+
+  # first we try to combine without trimming.
+  if again:
+    contigs = contigs.combine(max_mismatch, min_support=0, again=false)
+
+  # then, we try to combine after trimming.
   result = new_seq_of_cap[Contig](len(contigs))
   var usedi = 0
   for i, c in contigs:
-    c.trim(min_support=min_support)
+    if min_support > 0:
+      c.trim(min_support=min_support)
     # the contig might be trimmed down to nothing so we take the first one that has some reads
     if c.nreads > 0 and result.len == 0:
       result.add(c)
       usedi = i
   if result.len == 0: return
-  #var bsum = sum(map(contigs, proc(a: Contig): int = return a.nreads))
 
   for i in 0..contigs.high:
     if i == usedi: continue
@@ -273,9 +280,6 @@ proc combine*(contigs: var seq[Contig], max_mismatch:int=0, min_support:int=3): 
     elif contigs[i].nreads > 0:
       result.add(contigs[i])
 
-  #if bsum != sum(map(result, proc(a: Contig): int = return a.nreads)):
-  #  stderr.write_line("[contig] error in combine didn't maintain same number of reads")
-  #  quit(2)
 
 when isMainModule:
   import unittest

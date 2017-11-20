@@ -19,7 +19,7 @@ type
   event = tuple[start: int, stop: int, len: int]
   roi = tuple[start: int, stop: int, reads:seq[Record]]
 
-proc trim(sequence: var string, base_qualities: seq[uint8], min_quality:int=12) =
+proc trim(sequence: var string, base_qualities: seq[uint8], min_quality:int=15) =
   var a = 0
   while a < base_qualities.high and base_qualities[a] < uint8(min_quality):
     a += 1
@@ -59,8 +59,7 @@ type
     AD*: array[2, int]
 
 proc info(v:Variant): string =
-  result = ("DP=" & $(v.AD[0] + v.AD[1]) &
-           ";AD=" & $v.AD[0] & "," & $v.AD[1] &
+  result = ("AD=" & $v.AD[0] & "," & $v.AD[1] &
            ";ref_kmer=" & $v.ref_kmer &
            ";alt_kmer=" & $v.alt_kmer)
   if v.info_str.len != 0:
@@ -78,7 +77,7 @@ const header = """##fileformat=VCFv4.2
 ##INFO=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the ref and alt alleles in the order listed">
 ##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Difference in length between REF and ALT alleles">
-##INFO=<ID=DP,Number=1,Type=Integer,Description="supporting k-mer depth">
+##INFO=<ID=DP,Number=1,Type=Integer,Description="total reads covering this site">
 ##INFO=<ID=BS,Number=1,Type=Integer,Description="number of times there was support for both ref and alt k-mer in a single read">
 ##INFO=<ID=MF,Number=1,Type=Integer,Description="minimum matching bases around this event when BS > 0. Higher gives more confidence">
 ##INFO=<ID=CF,Number=1,Type=Integer,Description="minimum flank of the event from either end of the contig. higher is better.">
@@ -111,7 +110,7 @@ proc same(a:Variant, b:Variant): bool =
   if a == nil or b == nil: return false
   return (a.start == b.start) and (a.chrom == b.chrom) and (a.reference == b.reference) and (a.alternate == b.alternate)
 
-const init_len = 100000000
+const init_len = high(int)
 proc get_min_flank(e:ksw2.event, ez:Ez): int =
   result = init_len
   var found_event = false
@@ -140,7 +139,8 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
   var base_q = new_seq[uint8](300)
   # assemble the alt contig
   for read in r.reads:
-    if read.skippable(allow_unmapped=true): continue
+    if read.qual < 20'u8: continue
+    if read.skippable(allow_unmapped=false): continue
     discard read.sequence(read_seq)
     discard read.base_qualities(base_q)
     trim(read_seq, base_q)
@@ -149,8 +149,15 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
   var n_contigs = len(contigs)
   when not defined(release):
     echo "n contigs:", n_contigs
+    for c in contigs:
+        echo "start:", c.start, " ", c.nreads
   contigs = contigs.combine()
   var n_contigs_a = len(contigs)
+  when not defined(release):
+    echo "n contigs after:", n_contigs_a
+    for c in contigs:
+        #echo "start:", c.start, " ", c.nreads
+        echo c.sequence
   var sequence = ""
   var chrom = r.reads[0].chrom
 
@@ -161,6 +168,7 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
 
     var max_stop = ctg.start
     for read in r.reads:
+      if read.qual < 5: continue
       max_stop = max(max_stop, read.stop)
 
     var width = int((K + 1) / 2 - 1)
@@ -191,6 +199,7 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
     for tloc in ez.target_locations(ctg.start):
       ii += 1
       if tloc.len.int < min_event_len: continue
+      # TODO: relative positions of ref and alt should match
       var tstart = max(0, tloc.start - ctg.start - width)
       if tstart + K > reference.len:
         tstart = reference.len - K
@@ -251,6 +260,7 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
 
       var both_found = 0
       for read in r.reads:
+        if read.qual < 10: continue
         #var e2 = new_ez()
         #discard read.sequence(read_seq)
         #read_seq.align_to(reference, e2)
@@ -269,7 +279,8 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
             both_found += 1
 
       if alt_support < min_reads: continue
-      if float64(alt_support) / float64(alt_support + ref_support) < 0.1: continue
+      #if float64(alt_support) / float64(alt_support + ref_support) < 0.1: continue
+      if float64(alt_support) / float64(r.reads.len) < 0.1: continue
 
       var gt = genotype(ref_support, alt_support, 1e-3)
       if gt.GT == GT.HOM_REF: continue
@@ -278,6 +289,7 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
       # this line works extremeley well to remove false positives with no loss of sensitivity.
       if offset == 0 and both_found >= int(0.75 * float64(min(ref_support, alt_support))): continue
 
+      v.info_add("DP=" & $r.reads.len)
       if low_offset:
         v.info_add("LO")
         v.qual /= 2'f64
@@ -292,7 +304,7 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
       if (min_flank - 1) < max(tloc.stop - tloc.start, qloc.stop - qloc.start): continue
       v.info_add("MF=" & $min_flank)
       v.info_add("CF=" & $offset)
-      v.info_add("NC=" & $n_contigs_a)
+      v.info_add("NC=" & $n_contigs)
       if offset == 0:
           v.qual /= 4'f64
       v.info_add("AKE=" &  formatFloat(mean(adists), precision=2, format=ffDecimal))
@@ -301,6 +313,10 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
       if tloc.event_type == Deletion:
         v.reference = fai.get(chrom, tloc.start - 1, tloc.stop - 1)
         v.alternate = v.reference[0..<1]
+        # di-nucleotide repeats.
+        #if (alt_support - both_found) < 5 and v.reference[1..<v.reference.len].toSet.len == 2:
+        #  if fai.get(chrom, tloc.start, tloc.stop + 12 * (v.reference.len - 1)).count(v.reference[1..<v.reference.len]) > 11:
+        #    continue
       else:
         v.reference = fai.get(chrom, tloc.start - 1, tloc.start - 1)
         v.alternate = ctg.sequence[(qloc.start-1)..<qloc.stop]

@@ -93,6 +93,13 @@ e.g. 65. Need a way to recover this as it happens a lot in low-coverage scenario
 first combine, then trim (currently, it's trim, combine).
 This should also allow more permissive overlaps if the correction list is empty.
 
+track a read/contig matches multiple contigs with the same match, mismatch count
+
+# CHM1/13 truth-set
+
+https://www.ncbi.nlm.nih.gov/biosample?Db=biosample&DbFrom=bioproject&Cmd=Link&LinkName=bioproject_biosample&LinkReadableName=BioSample&ordinalpos=1&IdsFromResult=316945
+
+
 # contigs
 
 `min_overlap` in contig::best_match should be a float between 0 and 1 that will make sure that at least
