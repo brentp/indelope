@@ -87,7 +87,7 @@ indelope --min-event-len 5 --min-reads 5 $fasta $bam > $vcf
 
 + [lancet](https://github.com/nygenome/lancet), [scalpel](http://scalpel.sourceforge.net/),
   [mate-clever](https://academic.oup.com/bioinformatics/article/29/24/3143/194997),  and [prosic2](https://github.com/prosic/prosic2) are all
-  great tools that are similar in spirit that are worth checking out (the latter 2 are focused on somatic variation).
+  great tools that are similar in spirit that are worth checking out (of those, AFAICT, only scalpel has a focus on germ-line variation).
 
 
 ## notes and TODO
@@ -104,6 +104,14 @@ track a read/contig matches multiple contigs with the same match, mismatch count
 # CHM1/13 truth-set
 
 https://www.ncbi.nlm.nih.gov/biosample?Db=biosample&DbFrom=bioproject&Cmd=Link&LinkName=bioproject_biosample&LinkReadableName=BioSample&ordinalpos=1&IdsFromResult=316945
+
+
+~/.aspera/connect/bin/ascp -P33001 -QT -L- -l 1000M -i ~/.aspera/connect/etc/asperaweb_id_dsa.openssh era-fasp@fasp.sra.ebi.ac.uk:/vol1/ERA596/ERA596286/bam/CHM1_1.bam .
+~/.aspera/connect/bin/ascp -P33001 -QT -L- -l 1000M -i ~/.aspera/connect/etc/asperaweb_id_dsa.openssh era-fasp@fasp.sra.ebi.ac.uk:/vol1/ERA596/ERA596286/bam/CHM13_1.bam .
+
+ftp://ftp.ncbi.nlm.nih.gov/pub/dbVar/data/Homo_sapiens/by_study/nstd137_Huddleston_et_al_2016/genotype/CHM1_final_genotypes.annotated.vcf.gz
+ftp://ftp.ncbi.nlm.nih.gov/pub/dbVar/data/Homo_sapiens/by_study/nstd137_Huddleston_et_al_2016/genotype/CHM13_final_genotypes.annotated.vcf.gz
+ftp://ftp.ncbi.nlm.nih.gov/pub/dbVar/data/Homo_sapiens/by_study/nstd137_Huddleston_et_al_2016/genotype/
 
 
 # contigs

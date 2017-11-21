@@ -264,7 +264,7 @@ proc combine*(contigs: var seq[Contig], max_mismatch:int=0, min_support:int=3, a
   var usedi = 0
   for i, c in contigs:
     if min_support > 0:
-      c.trim(min_support=min_support)
+      c.trim(min_support=min(c.nreads, min_support))
     # the contig might be trimmed down to nothing so we take the first one that has some reads
     if c.nreads > 0 and result.len == 0:
       result.add(c)

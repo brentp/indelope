@@ -78,6 +78,8 @@ const header = """##fileformat=VCFv4.2
 ##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Difference in length between REF and ALT alleles">
 ##INFO=<ID=DP,Number=1,Type=Integer,Description="total reads covering this site">
+##INFO=<ID=AMQ,Number=1,Type=Integer,Description="median mapping quality of alts">
+##INFO=<ID=RMQ,Number=1,Type=Integer,Description="median mapping quality of refs">
 ##INFO=<ID=BS,Number=1,Type=Integer,Description="number of times there was support for both ref and alt k-mer in a single read">
 ##INFO=<ID=MF,Number=1,Type=Integer,Description="minimum matching bases around this event when BS > 0. Higher gives more confidence">
 ##INFO=<ID=CF,Number=1,Type=Integer,Description="minimum flank of the event from either end of the contig. higher is better.">
@@ -132,33 +134,44 @@ proc mean(a:seq[int]): float64 =
         result += v.float64
     return result / float64(a.len)
 
-iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=4, min_event_len:int=4, K:int=27): Variant =
+proc median(a: seq[uint8]): int =
+  var b = a
+  sort(b, proc(a, b: uint8): int = return int(a) - int(b))
+  return int(b[int(len(b)/2)])
 
+proc assemble(r: roi, n_contigs:ptr int, min_qual:uint8=uint8(20), min_overlap_pct:float64=0.88): seq[Contig] =
+  ## assemble the reads into contigs
   var contigs = new_seq[Contig]()
   var read_seq = ""
   var base_q = new_seq[uint8](300)
   # assemble the alt contig
   for read in r.reads:
-    if read.qual < 20'u8: continue
+    if read.qual < min_qual: continue
     if read.skippable(allow_unmapped=false): continue
     discard read.sequence(read_seq)
     discard read.base_qualities(base_q)
     trim(read_seq, base_q)
-    contigs.insert(read_seq, read.start, min_overlap=int(0.88 * float64(read_seq.len)))
+    contigs.insert(read_seq, read.start, min_overlap=int(min_overlap_pct * float64(read_seq.len)))
 
-  var n_contigs = len(contigs)
+  n_contigs[] = len(contigs)
   when not defined(release):
-    echo "n contigs:", n_contigs
+    echo "n contigs:", n_contigs[]
     for c in contigs:
         echo "start:", c.start, " ", c.nreads
-  contigs = contigs.combine()
+  contigs = contigs.combine(min_support=3)
   var n_contigs_a = len(contigs)
   when not defined(release):
     echo "n contigs after:", n_contigs_a
     for c in contigs:
-        #echo "start:", c.start, " ", c.nreads
+        echo "start:", c.start, " ", c.nreads
         echo c.sequence
-  var sequence = ""
+  return contigs
+
+iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=4, min_event_len:int=4, K:int=27): Variant =
+
+  var n_contigs:int
+  var contigs = r.assemble(n_contigs.addr)
+  var read_seq = ""
   var chrom = r.reads[0].chrom
 
   for ctg in contigs:
@@ -177,15 +190,12 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
     ctg.sequence.align_to(reference, ez)
     when not defined(release):
       echo ez.cigar_string(read_seq)
-
-    #[
-    discard ez.cigar_string(read_seq, full=true)
-    echo "roi:", r.start, "-", r.stop
-    echo "ctg range:", ctg.start, " ", ctg.start + ctg.len
-    echo "full:", read_seq
-    echo "part:", ez.cigar_string(read_seq, full=true)
-    echo ez.draw(ctg.sequence, reference)
-    ]#
+      discard ez.cigar_string(read_seq, full=true)
+      echo "roi:", r.start, "-", r.stop
+      echo "ctg range:", ctg.start, " ", ctg.start + ctg.len
+      echo "full:", read_seq
+      echo "part:", ez.cigar_string(read_seq, full=true)
+      echo ez.draw(ctg.sequence, reference)
 
     var qlocs = toSeq(ez.query_locations())
     if len(qlocs) == 0 or len(qlocs) > 3 or (qlocs[0].start != 0 and len(qlocs) > 2): continue
@@ -207,7 +217,6 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
       var ref_kmer = reference[tstart..<(tstart + K)]
       var qloc = qlocs[ii]
 
-      var low_offset = qloc.start < 5 or qloc.stop + 6 > ctg.len
       var offset = min(qloc.start, ctg.len - qloc.stop - 1)
       var qstart = max(qloc.start - width, 0)
       if qstart + K > ctg.len:
@@ -220,18 +229,15 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
       # 1. maximize counts
       # 2. minimize bs
       # 3. vary offset and k-mer length.
-      #[
-      echo qlocs
-      for i in ez.cigar:
-          echo i
-      ]#
       if alt_kmer == ref_kmer:
+        # move to the left since usually to try to find varied sequence
         qstart = max(qloc.start - 3, 0)
         if qstart + K > ctg.sequence.len:
           var qend = min(qloc.stop + 4, ctg.len)
           alt_kmer = ctg.sequence[qend - K..<(qend)]
         else:
           alt_kmer = ctg.sequence[qstart..<(qstart + K)]
+
       if ref_kmer == alt_kmer and (qloc.start == 0 or alt_kmer.toSet.len == 1): continue
       # simple repeats are hard so require at least 2 unique bases.
       if ref_kmer.toSet.len < 3: continue
@@ -249,7 +255,7 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
         stderr.write_line("bug!!! kmer lengths should be equal, ref:" & $ref_kmer.len & " alt:" & $alt_kmer.len)
         stderr.write_line("bug!!! " & $qloc & " alt:" & $tloc)
         stderr.write_line("bug!!! tloc start:" & $(tloc.start - ctg.start - width) & " ctg len:" & $ctg.len & " genomic position:" & $chrom & ":" & $tloc.start)
-        quit(2)
+        #quit(2)
 
       var refe = ref_kmer.mincode()
       var alte = alt_kmer.mincode()
@@ -257,6 +263,8 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
       var ref_support = 0
       var adists = new_seq_of_cap[int](len(r.reads))
       var rdists = new_seq_of_cap[int](len(r.reads))
+      var amapqs = new_seq_of_cap[uint8](len(r.reads))
+      var rmapqs = new_seq_of_cap[uint8](len(r.reads))
 
       var both_found = 0
       for read in r.reads:
@@ -271,10 +279,12 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
             if not ref_found and e == refe:
                 ref_support += 1; ref_found = true
                 rdists.add(d)
+                rmapqs.add(read.qual)
 
             if not alt_found and e == alte:
                 alt_support += 1; alt_found = true
                 adists.add(d)
+                amapqs.add(read.qual)
         if ref_found and alt_found:
             both_found += 1
 
@@ -290,7 +300,7 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
       if offset == 0 and both_found >= int(0.75 * float64(min(ref_support, alt_support))): continue
 
       v.info_add("DP=" & $r.reads.len)
-      if low_offset:
+      if offset < 5:
         v.info_add("LO")
         v.qual /= 2'f64
       if both_found > 0:
@@ -309,6 +319,10 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
           v.qual /= 4'f64
       v.info_add("AKE=" &  formatFloat(mean(adists), precision=2, format=ffDecimal))
       v.info_add("RKE=" &  formatFloat(mean(rdists), precision=2, format=ffDecimal))
+      if len(amapqs) > 0:
+        v.info_add("AMQ=" & $median(amapqs))
+      if len(rmapqs) > 0:
+        v.info_add("RMQ=" & $median(rmapqs))
       if mean(adists) < 5: continue
       if tloc.event_type == Deletion:
         v.reference = fai.get(chrom, tloc.start - 1, tloc.stop - 1)
@@ -412,7 +426,7 @@ proc clear(c:var cache_t) =
 proc len(c:cache_t): int {.inline.} =
     return c.records.len
 
-iterator gen_roi(b:Bam, t:Target, min_event_support:uint8=4, min_read_coverage:int=4, max_read_coverage:int=200): roi =
+iterator gen_roi(b:Bam, t:Target, min_event_support:uint8=4, min_read_coverage:int=4, max_read_coverage:int=600): roi =
   # we iterate over the bam an increment an evidence counter in an genomic array for positions
   # that appear to have an event (any non match)
   # whenever we have a gap in coverage where start > last_end, we check the evidence
