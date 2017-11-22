@@ -19,14 +19,14 @@ type
   event = tuple[start: int, stop: int, len: int]
   roi = tuple[start: int, stop: int, reads:seq[Record]]
 
-proc trim(sequence: var string, base_qualities: seq[uint8], min_quality:int=15) =
+proc trim(sequence: var string, base_qualities: seq[uint8], min_quality:int=15): int =
   var a = 0
   while a < base_qualities.high and base_qualities[a] < uint8(min_quality):
     a += 1
 
   if a == base_qualities.high:
     sequence.set_len(0)
-    return
+    return a
 
   var b = base_qualities.high
   while b > a and base_qualities[b] < uint8(min_quality):
@@ -34,6 +34,7 @@ proc trim(sequence: var string, base_qualities: seq[uint8], min_quality:int=15) 
 
   if a != 0 or b != base_qualities.high:
     sequence = sequence[a..b]
+  return a
 
 proc skippable(r: Record, allow_unmapped:bool=false): bool {.inline.} =
   if r.chrom == "hs37d5": return true
@@ -78,6 +79,7 @@ const header = """##fileformat=VCFv4.2
 ##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Difference in length between REF and ALT alleles">
 ##INFO=<ID=DP,Number=1,Type=Integer,Description="total reads covering this site">
+##INFO=<ID=AL,Number=0,Type=Flag,Description="this was genotyped with alignment, no k-mer counting">
 ##INFO=<ID=AMQ,Number=1,Type=Integer,Description="median mapping quality of alts">
 ##INFO=<ID=RMQ,Number=1,Type=Integer,Description="median mapping quality of refs">
 ##INFO=<ID=BS,Number=1,Type=Integer,Description="number of times there was support for both ref and alt k-mer in a single read">
@@ -128,6 +130,18 @@ proc get_min_flank(e:ksw2.event, ez:Ez): int =
       found_event = true
   return 0
 
+proc show(ez:Ez, r:roi, ctg:Contig, reference:string) =
+  # debug ez alignment
+  var s = ""
+  echo ez.cigar_string(s)
+  discard ez.cigar_string(s, full=true)
+  echo "roi:", r.start, "-", r.stop
+  echo "ctg range:", ctg.start, " ", ctg.start + ctg.len
+  echo "lens:", ctg.len, " ", reference.len
+  echo "full:", s
+  echo "part:", ez.cigar_string(s, full=true)
+  echo ez.draw(ctg.sequence, reference)
+
 proc mean(a:seq[int]): float64 =
     result = 0'f64
     for v in a:
@@ -150,8 +164,8 @@ proc assemble(r: roi, n_contigs:ptr int, min_qual:uint8=uint8(20), min_overlap_p
     if read.skippable(allow_unmapped=false): continue
     discard read.sequence(read_seq)
     discard read.base_qualities(base_q)
-    trim(read_seq, base_q)
-    contigs.insert(read_seq, read.start, min_overlap=int(min_overlap_pct * float64(read_seq.len)))
+    var o = trim(read_seq, base_q)
+    contigs.insert(read_seq, read.start + o, min_overlap=int(min_overlap_pct * float64(read_seq.len)))
 
   n_contigs[] = len(contigs)
   when not defined(release):
@@ -167,6 +181,22 @@ proc assemble(r: roi, n_contigs:ptr int, min_qual:uint8=uint8(20), min_overlap_p
         echo c.sequence
   return contigs
 
+proc count_flanked_cigar(ez:Ez): int =
+  var matched = false
+  var n = 0
+  var last_op: int
+  for e in ez.cigar:
+    if not matched:
+      if e.op == 0:
+        n += 1
+        matched = true
+    else:
+      n += 1
+    last_op = int(e.op)
+  if last_op != 0:
+    n -= 1
+  return n
+
 iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=4, min_event_len:int=4, K:int=27): Variant =
 
   var n_contigs:int
@@ -181,30 +211,22 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
 
     var max_stop = ctg.start
     for read in r.reads:
-      if read.qual < 5: continue
+      if read.qual <= 5: continue
       max_stop = max(max_stop, read.stop)
 
     var width = int((K + 1) / 2 - 1)
     # TODO: for an SV, for the alignment, we need both ends.
-    var reference = fai.get(chrom, ctg.start, max_stop + K + 1)
-    ctg.sequence.align_to(reference, ez)
-    when not defined(release):
-      echo ez.cigar_string(read_seq)
-      discard ez.cigar_string(read_seq, full=true)
-      echo "roi:", r.start, "-", r.stop
-      echo "ctg range:", ctg.start, " ", ctg.start + ctg.len
-      echo "full:", read_seq
-      echo "part:", ez.cigar_string(read_seq, full=true)
-      echo ez.draw(ctg.sequence, reference)
-
+    var reference = fai.get(chrom, ctg.start, max_stop + width + 50)
+    ctg.sequence.align_to(reference, ez, bw=50, z=400)
     var qlocs = toSeq(ez.query_locations())
-    if len(qlocs) == 0 or len(qlocs) > 3 or (qlocs[0].start != 0 and len(qlocs) > 2): continue
-    ## TODO: revisit this.
-    if len(qlocs) == 1 and qlocs[0].start == 0 and qlocs[0].event_type == Deletion and qlocs[0].len < 10: continue
-    var ii = -1
 
-    #echo "qlocs:", qlocs
-    #echo "tlocs:", toSeq(ez.target_locations(ctg.start))
+    when not defined(release):
+      ez.show(r, ctg, reference)
+      echo "\nqlocs:", qlocs
+      echo "tlocs:", toSeq(ez.target_locations(ctg.start))
+
+    if len(qlocs) == 0 or len(qlocs) > 4: continue
+    var ii = -1
 
     for tloc in ez.target_locations(ctg.start):
       ii += 1
@@ -230,7 +252,7 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
       # 2. minimize bs
       # 3. vary offset and k-mer length.
       if alt_kmer == ref_kmer:
-        # move to the left since usually to try to find varied sequence
+        # move to the left to find varied sequence
         qstart = max(qloc.start - 3, 0)
         if qstart + K > ctg.sequence.len:
           var qend = min(qloc.stop + 4, ctg.len)
@@ -270,7 +292,6 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
       for read in r.reads:
         if read.qual < 10: continue
         #var e2 = new_ez()
-        #discard read.sequence(read_seq)
         #read_seq.align_to(reference, e2)
         #echo toSeq(items(read.cigar)), ".. ", e2.cigar_string(read_seq)
         var ref_found = false
@@ -287,6 +308,55 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
                 amapqs.add(read.qual)
         if ref_found and alt_found:
             both_found += 1
+      var aligned = false
+      if both_found > 0:
+        # if we didnt' get uniq k-mers, we resort to alignment
+        var ez_ref = new_ez(mismatch=int8(-2), gap_open=int8(5), gap_ext=int8(1))
+        var ez_alt = new_ez(mismatch=int8(-2), gap_open=int8(5), gap_ext=int8(1))
+        #var ez_ref = new_ez()
+        #var ez_alt = new_ez()
+        ref_support = 0
+        alt_support = 0
+        var xa = ""
+        var xr = ""
+        #stderr.write_line "##############################################"
+        var base_q = new_seq[uint8](200)
+        for read in r.reads:
+          if read.qual < 10: continue
+          discard read.sequence(read_seq)
+          discard read.base_qualities(base_q)
+          var rs =  read.start + trim(read_seq, base_q)
+          if rs > tloc.stop: continue
+          var L = 0
+          if tloc.event_type == Insertion:
+            L = tloc.len.int
+          if rs + read_seq.len + L < tloc.start: continue
+
+          var ref_sub, ctg_sub: string
+          var start = max(rs, ctg.start) - ctg.start
+          ref_sub = reference[start..<reference.len]
+          ctg_sub = ctg.sequence[start..<ctg.len]
+
+          read_seq.align_to(ref_sub, ez_ref)
+          read_seq.align_to(ctg_sub, ez_alt)
+
+          var rn = count_flanked_cigar(ez_ref)
+          var an = count_flanked_cigar(ez_alt)
+          when defined(debug):
+            stderr.write_line("####")
+            stderr.write_line "ref:" & $ez_ref.cigar_string(xr, full=false) & "(" & $ez_ref.score & ")" & " alt: " & $ez_alt.cigar_string(xa, full=false) & "(" & $ez_alt.score & ")"
+            stderr.write_line "ref_len:" & $ez_ref.n_cigar & " alt_len: " & $ez_alt.n_cigar
+            stderr.write_line "ref_rn:" & $rn & " alt_rn: " & $an
+          if rn == 1 and an > 1:# or ez_ref.score > ez_alt.score + 1:
+            ref_support += 1
+          elif an == 1 and rn > 1:# or ez_alt.score > ez_ref.score + 1:
+            alt_support += 1
+
+        #stderr.write_line "ref_support:" & $ref_support & " alt_support:" & $alt_support & " at: " & chrom & ":" & $tloc
+        if ref_support != alt_support:
+          both_found = 0
+        aligned = true
+
 
       if alt_support < min_reads: continue
       #if float64(alt_support) / float64(alt_support + ref_support) < 0.1: continue
@@ -309,6 +379,8 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
       else:
         v.qual *= 2
       v.info_add("CC=" & ez.cigar_string(read_seq))
+      if aligned:
+        v.info_add("AL")
       var min_flank = qloc.get_min_flank(ez)
       # if we have a big event and a small flank, bail
       if (min_flank - 1) < max(tloc.stop - tloc.start, qloc.stop - qloc.start): continue
@@ -510,10 +582,13 @@ Options:
   var targets = b.hdr.targets
 
   var last_var: Variant
+  var last_var2: Variant
   echo header % [b.contig_header, "sample"]
   for target in targets:
     for r in gen_roi(b, target, min_read_coverage=min_reads, min_event_support=max(3, min_reads-2).uint8):
       for v in callsemble(r, fai, ez, min_ctg_len=min_ctg_len, min_reads=min_reads, min_event_len=min_event_len):
         if v.same(last_var): continue
+        if v.same(last_var2): continue
         echo v
+        last_var2 = last_var
         last_var = v

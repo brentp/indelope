@@ -1,4 +1,6 @@
 import ksw2_c
+export ksw2_c.KSW_EZ_RIGHT
+export ksw2_c.KSW_EZ_EXTZ_ONLY
 
 type 
   Ez* = ref object of RootObj
@@ -90,7 +92,7 @@ iterator query_locations*(e: Ez, start:int=0): event {.inline.} =
 
 proc score*(e:Ez): int {.inline.} =
   ## report the max score at the end of the query
-  return e.c.mqe_t
+  return e.c.score
 
 proc draw*(e:Ez, q:string, t:string): string =
   ## string represention of the alignment target\nquery
@@ -142,25 +144,24 @@ proc new_ez*(match:int8=1, mismatch:int8=(-2), gap_open:int8=4, gap_ext:int8=1):
   var mm = mismatch
   if mm > 0: mm = -mm
   return Ez(c: cez, mat: matrix(match, mismatch),
-            gap_open: abs(gap_open), gap_ext:abs(gap_ext),
+            gap_open: abs(gap_open), gap_ext: abs(gap_ext),
             q:new_seq[uint8](1000),
             t:new_seq[uint8](1000))
 
-proc align_to*(query: var seq[uint8], target: var seq[uint8], ez:Ez, flag:cint=0) {.inline.} =
+proc align_to*(query: var seq[uint8], target: var seq[uint8], ez:Ez, flag:cint=0, bw:int=(-1), z:int=(-1)) {.inline.} =
   ## align an encoded query to an encoded target.
-  var bw = -1 # TODO
-  var z = -1
+  ez.c.n_cigar = 0
   ksw_extz2_sse(nil.pointer, query.len.cint, cast[ptr uint8](query[0].addr),
                 target.len.cint, cast[ptr uint8](target[0].addr),
                 5.int8, cast[ptr int8](ez.mat[0].addr),
                 ez.gap_open, ez.gap_ext, bw.cint, z.cint, flag, ez.c.addr)
 
-proc align_to*(query: string, target: string, ez:Ez, flag:cint=0) {.inline.} =
+proc align_to*(query: string, target: string, ez:Ez, flag:cint=0, bw:int=(-1), z:int=(-1)) {.inline.} =
   ## align a query to a target with the parameters in ez
   ## the encoding is (re)done internally and re-uses memory to avoid allocations.
   query.encode(ez.q)
   target.encode(ez.t)
-  ez.q.align_to(ez.t, ez, flag)
+  ez.q.align_to(ez.t, ez, flag=flag, bw=bw, z=z)
 
 when isMainModule:
 
@@ -174,7 +175,7 @@ when isMainModule:
   tgt.encode(tenc)
   qry.encode(tqry)
 
-  var ez = new_ez()
+  var ez = new_ez(match=int8(1), mismatch=int8(-2), gap_open=3'i8, gap_ext=1'i8)
 
   tqry.align_to(tenc, ez, flag=KSW_EZ_EXTZ_ONLY or KSW_EZ_RIGHT)
 
@@ -207,7 +208,7 @@ when isMainModule:
       check ez.tstop == 117
 
     test "score":
-      check ez.score == 116
+      check ez.c.mqe_t == 116
 
     test "event":
       check ez.max_event_length == 19
@@ -236,7 +237,3 @@ when isMainModule:
 
   for op in ez.cigar:
     echo op, op.str
-
-  tgt = "AGGATGACGGCTGTGCTGGTGGGTCACGGGCGGCTCTGGGTCACAGGTACGGAGGATGACGGCTGTGCTGGTGGGTCACGGGCGGCTCTGGGTCACAGGTACGGAGGATGACGGCTGTGCTGGTGGCCGTGGGGCTGG"
-  qry = "AGGATGACGGCTGTGCTGGTGGGTCACGGGCGGCTCTGGGTCACAGGTACGGAGGATGACGGCTGTGCTGGTGGGTCACGGGCGGCTCTGGGTCACAGGTACGGAGGATGACGGCTGTGCTGGGGG"
-
