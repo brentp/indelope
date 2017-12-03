@@ -10,7 +10,8 @@ import math
 import algorithm
 import strutils
 import docopt
-import hts
+import hts/bam
+import hts/fai
 import ./ksw2/ksw2
 import kmer
 import genotyper
@@ -310,7 +311,9 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
             both_found += 1
       var aligned = false
       if both_found > 0:
+        var missed = 0
         # if we didnt' get uniq k-mers, we resort to alignment
+        both_found = 0
         var ez_ref = new_ez(mismatch=int8(-2), gap_open=int8(5), gap_ext=int8(1))
         var ez_alt = new_ez(mismatch=int8(-2), gap_open=int8(5), gap_ext=int8(1))
         #var ez_ref = new_ez()
@@ -352,9 +355,20 @@ iterator callsemble(r: roi, fai: Fai, ez: Ez, min_ctg_len:int=74, min_reads:int=
           elif an == 1 and rn > 1:# or ez_alt.score > ez_ref.score + 1:
             alt_support += 1
 
+          #[
+          var rc = ref_sub.contains(read_seq)
+          var ac = ctg_sub.contains(read_seq)
+          if ac and rc:
+            both_found += 1
+          elif ac:
+            alt_support += 1
+          elif rc:
+            ref_support += 1
+          else:
+            missed += 1
+          ]#
+
         #stderr.write_line "ref_support:" & $ref_support & " alt_support:" & $alt_support & " at: " & chrom & ":" & $tloc
-        if ref_support != alt_support:
-          both_found = 0
         aligned = true
 
 
@@ -576,7 +590,7 @@ Options:
      min_ctg_len = parse_int($args["--min-contig-len"])
      min_event_len = parse_int($args["--min-event-len"])
      bam_path = $args["<BAM-or-CRAM>"]
-     fai = open_fai($args["<reference>"])
+     faidx = open_fai($args["<reference>"])
 
   open(b, bam_path, index=true, threads=parse_int($args["--threads"]))
   var targets = b.hdr.targets
@@ -586,7 +600,7 @@ Options:
   echo header % [b.contig_header, "sample"]
   for target in targets:
     for r in gen_roi(b, target, min_read_coverage=min_reads, min_event_support=max(3, min_reads-2).uint8):
-      for v in callsemble(r, fai, ez, min_ctg_len=min_ctg_len, min_reads=min_reads, min_event_len=min_event_len):
+      for v in callsemble(r, faidx, ez, min_ctg_len=min_ctg_len, min_reads=min_reads, min_event_len=min_event_len):
         if v.same(last_var): continue
         if v.same(last_var2): continue
         echo v
