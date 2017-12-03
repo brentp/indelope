@@ -7,7 +7,8 @@ license       = "MIT"
 
 # Dependencies
 
-requires "nim >= 0.17.2", "hts >= 0.1.0", "docopt"
+## note that kmer is currently from: github.com/brentp/kmer
+requires "nim >= 0.17.2", "hts >= 0.1.0", "docopt", "kmer"
 bin = @["indelope"]
 srcDir = "src"
 
